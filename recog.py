@@ -26,7 +26,7 @@ from rich.text  import Text
 
 
 folder_path = '/Users/yutakanno/Library/CloudStorage/GoogleDrive-poohyuta604@gmail.com/My Drive/mediapipe_test'
-video_name  = 'cam1'
+video_name  = 'cam2'
 
 model_path = Path( __file__ ).parent / 'pose_landmarker_heavy.task'
 
@@ -34,7 +34,7 @@ model_path = Path( __file__ ).parent / 'pose_landmarker_heavy.task'
 min_pose_detection_confidence = 0.8
 min_pose_presence_confidence  = 0.8
 min_tracking_confidence       = 0.8
-visibility_threshold          = 0.95
+visibility_threshold          = 0.9
 
 
 def pose_recog( folder_path, video_name, model_path ):
