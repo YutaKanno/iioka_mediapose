@@ -3,6 +3,7 @@ import cv2
 import mediapipe as mp
 import pandas    as pd
 import numpy     as np
+import argparse
 
 from pathlib import Path
 
@@ -24,9 +25,14 @@ from rich.table import Table
 from rich.text  import Text
 
 
+# --------------------------------------------------
+# デフォルト設定
+# --------------------------------------------------
+# folder_path と video_name はコマンドライン引数で上書きする想定。
+# ここでのデフォルト値は「ローカルでの動作確認用」の値にしてある。
 
-folder_path = '/Users/yutakanno/Library/CloudStorage/GoogleDrive-poohyuta604@gmail.com/My Drive/mediapipe_test'
-video_name  = 'cam2'
+default_folder_path = './data'
+default_video_name  = 'cam2'
 
 model_path = Path( __file__ ).parent / 'pose_landmarker_heavy.task'
 
@@ -37,7 +43,7 @@ min_tracking_confidence       = 0.8
 visibility_threshold          = 0.9
 
 
-def pose_recog( folder_path, video_name, model_path ):
+def pose_recog( folder_path, video_name, model_path, use_gpu ):
 
     video_path = os.path.join( folder_path, f'{video_name}.mp4' )
 
@@ -60,8 +66,20 @@ def pose_recog( folder_path, video_name, model_path ):
 
     landmark_names = [ lm.name for lm in vision.PoseLandmark ]
 
+    # Colab の GPU ランタイムで実行する場合は delegate に GPU を指定する。
+    # ローカルの CPU 環境ではエラーになることがあるため、use_gpu フラグで切り替える。
+    if use_gpu:
+        delegate = mp_tasks.BaseOptions.Delegate.GPU
+    else:
+        delegate = mp_tasks.BaseOptions.Delegate.CPU
+
+    base_options = mp_tasks.BaseOptions(
+        model_asset_path = str( model_path ),
+        delegate         = delegate,
+    )
+
     options = vision.PoseLandmarkerOptions(
-        base_options = mp_tasks.BaseOptions( model_asset_path = str( model_path ) ),
+        base_options = base_options,
         running_mode = vision.RunningMode.VIDEO,
         num_poses    = 1,
         min_pose_detection_confidence = min_pose_detection_confidence,
@@ -91,6 +109,7 @@ def pose_recog( folder_path, video_name, model_path ):
     info_table.add_row( 'Frames', f'{frame_num:,}' )
     info_table.add_row( 'Duration', f'{duration:.1f} sec' )
     info_table.add_row( 'Model', model_path.name )
+    info_table.add_row( 'Delegate', 'GPU' if use_gpu else 'CPU' )
     info_table.add_row( 'Detection conf.', f'{min_pose_detection_confidence:.2f}' )
     info_table.add_row( 'Presence conf.', f'{min_pose_presence_confidence:.2f}' )
     info_table.add_row( 'Tracking conf.', f'{min_tracking_confidence:.2f}' )
@@ -213,5 +232,45 @@ def pose_recog( folder_path, video_name, model_path ):
     )
 
 
+def parse_args():
+
+    # Colab から `!python recog.py --folder_path ... --video_name ...` の形で
+    # 呼び出せるように、パスと動画名をコマンドライン引数として受け取る。
+
+    parser = argparse.ArgumentParser(
+        description = 'MediaPipe Pose Landmarker を使って動画から姿勢データを抽出する'
+    )
+
+    parser.add_argument(
+        '--folder_path',
+        type = str,
+        default = default_folder_path,
+        help = '動画ファイルが置かれているフォルダのパス（例: Drive をマウントしたパス）',
+    )
+
+    parser.add_argument(
+        '--video_name',
+        type = str,
+        default = default_video_name,
+        help = '拡張子を除いた動画ファイル名（例: cam2 → cam2.mp4 を読み込む）',
+    )
+
+    parser.add_argument(
+        '--cpu',
+        action = 'store_true',
+        help = '指定すると GPU ではなく CPU で実行する（ローカルでの動作確認用）',
+    )
+
+    return parser.parse_args()
+
+
 if __name__ == '__main__':
-    pose_recog( folder_path, video_name, model_path )
+
+    args = parse_args()
+
+    pose_recog(
+        folder_path = args.folder_path,
+        video_name  = args.video_name,
+        model_path  = model_path,
+        use_gpu     = not args.cpu,
+    )
