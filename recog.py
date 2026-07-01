@@ -32,7 +32,6 @@ from rich.text  import Text
 # ここでのデフォルト値は「ローカルでの動作確認用」の値にしてある。
 
 default_folder_path = './data'
-default_video_name  = 'cam2'
 
 model_path = Path( __file__ ).parent / 'pose_landmarker_heavy.task'
 
@@ -251,8 +250,9 @@ def parse_args():
     parser.add_argument(
         '--video_name',
         type = str,
-        default = default_video_name,
-        help = '拡張子を除いた動画ファイル名（例: cam2 → cam2.mp4 を読み込む）',
+        default = None,
+        help = '拡張子を除いた動画ファイル名（例: cam2 → cam2.mp4 を読み込む）。'
+               '指定しない場合は folder_path 内のすべての .mp4 を処理する。',
     )
 
     parser.add_argument(
@@ -264,13 +264,44 @@ def parse_args():
     return parser.parse_args()
 
 
+def find_video_names( folder_path ):
+
+    # folder_path 直下にある .mp4 ファイルをすべて探し、
+    # 拡張子を除いたファイル名（video_name として使う形）のリストにして返す。
+
+    folder = Path( folder_path )
+    mp4_paths = sorted( folder.glob( '*.mp4' ) )
+
+    video_names = []
+
+    for mp4_path in mp4_paths:
+        video_names.append( mp4_path.stem )
+
+    return video_names
+
+
 if __name__ == '__main__':
 
     args = parse_args()
 
-    pose_recog(
-        folder_path = args.folder_path,
-        video_name  = args.video_name,
-        model_path  = model_path,
-        use_gpu     = not args.cpu,
-    )
+    if args.video_name is not None:
+
+        # --video_name が指定された場合は、その1本だけを処理する。
+        video_names = [ args.video_name ]
+
+    else:
+
+        # 指定がない場合は、folder_path 内のすべての .mp4 を処理対象にする。
+        video_names = find_video_names( args.folder_path )
+
+        if len( video_names ) == 0:
+            print( f'{args.folder_path} 内に .mp4 ファイルが見つかりませんでした。' )
+
+    for video_name in video_names:
+
+        pose_recog(
+            folder_path = args.folder_path,
+            video_name  = video_name,
+            model_path  = model_path,
+            use_gpu     = not args.cpu,
+        )
