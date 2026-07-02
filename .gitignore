@@ -3,11 +3,26 @@ __pycache__/
 *.py[cod]
 .DS_Store
 
-# Generated outputs
-*.csv
-frames/
-*.mp4
-
 # IDE
 .vscode/
 .idea/
+
+# Claude Code
+.claude/
+
+# データファイル（CSV, NPZ, JSON設定）
+*.csv
+*.npz
+sync_config.json
+reprojection_errors.json
+wand_annotations.csv
+
+# 出力ファイル
+*.mp4
+*.html
+*.png
+frames/
+video_first_frames/
+
+# MediaPipe モデル（大容量）
+*.task

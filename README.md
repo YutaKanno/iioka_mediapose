@@ -1,6 +1,6 @@
-# iioka_mediapipe
+# iioka_mediapose
 
-MediaPipe Pose Landmarker を使った動画からの骨格ランドマーク抽出・可視化ツール。
+多カメラ映像の同期・カメラキャリブレーション・MediaPipe による姿勢推定・3次元座標算出をまとめて行う GUI アプリケーション。
 
 ## セットアップ
 
@@ -8,35 +8,35 @@ MediaPipe Pose Landmarker を使った動画からの骨格ランドマーク抽
 pip install -r requirements.txt
 ```
 
-`pose_landmarker_heavy.task` を同ディレクトリに配置してください（同梱済み）。
+[MediaPipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker) のモデルファイル（`pose_landmarker_heavy.task`）を同ディレクトリに配置してください。
 
 ## 使い方
 
-### 1. ランドマーク抽出 (`recog.py`)
-
-`recog.py` 内の `folder_path` と `video_name` を編集し、動画からランドマークを CSV に出力します。
-
 ```bash
-python recog.py
+python video_sync.py
 ```
 
-出力: `{video_name}.csv`
+## ワークフロー
 
-### 2. スケルトン可視化 (`recog_check.py`)
+| Step | タブ名 | 内容 |
+|------|--------|------|
+| 1 | Sync | 複数カメラ映像の同期（フレームオフセット調整） |
+| 2 | Calibration | ワンドアノテーション CSV を用いたカメラキャリブレーション |
+| 3 | Results | キャリブレーション結果の確認（再投影誤差など） |
+| 4 | Pose Recognition | MediaPipe によるポーズランドマーク抽出（全カメラ一括） |
+| 5 | Stick Check | スティックフィギュアの確認・カメラ別 visibility 閾値設定 |
+| 6 | 3D Recon | 三角測量による 3D 座標算出 → Plotly インタラクティブ表示 |
 
-CSV からフレーム画像とスケルトン動画を生成します。
+## ファイル構成
 
-```bash
-python recog_check.py
-```
-
-出力: `frames/` フォルダ、`{video_name}_skeleton.mp4`
-
-## 設定
-
-`recog.py` の先頭で検出閾値を調整できます。
-
-- `min_pose_detection_confidence`
-- `min_pose_presence_confidence`
-- `min_tracking_confidence`
-- `visibility_threshold`
+| ファイル | 役割 |
+|----------|------|
+| `video_sync.py` | メイン GUI アプリ |
+| `est_camera_poses.py` | カメラキャリブレーション（ワンド法） |
+| `recog_mediapipe.py` | MediaPipe Pose Landmarker による姿勢推定 |
+| `triangulate_only.py` | 多視点三角測量（DLT） |
+| `process_landmarks_3d.py` | 3D ランドマークの後処理 |
+| `make_3d_plot.py` | Plotly による 3D スティックフィギュア生成 |
+| `wand_annotate.py` | キャリブレーションワンドのアノテーションツール |
+| `wand_detection.py` | ワンドマーカーの自動検出 |
+| `recog_check.py` | 認識結果のスケルトン動画生成 |

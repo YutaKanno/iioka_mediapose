@@ -20,7 +20,7 @@ from rich.text import Text
 
 console = Console()
 
-csv_path = 'cam1.csv'
+csv_path = 'cam6.csv'
 video_path = csv_path.replace( '.csv', '.mp4' )
 
 df = pd.read_csv( csv_path )
