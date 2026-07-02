@@ -93,9 +93,11 @@ def main():
     end_frame     = pose3d.get( 'end_frame', None )
     default_thresh = float( pose3d.get( 'vis_thresh', 0.5 ) )
     # カメラ別閾値（なければ default_thresh を使用）
-    cam_thresholds = pose3d.get( 'cam_thresholds', {} )
-    csv_paths      = pose3d.get( 'csv_paths', {} )
-    output_csv    = 'landmarks_3d.csv'
+    cam_thresholds  = pose3d.get( 'cam_thresholds', {} )
+    # landmarks は sync_config.json に直接格納（CSV不要）
+    landmarks_store = pose3d.get( 'landmarks', {} )
+    end_frame_val   = end_frame if end_frame is not None else 'all'
+    output_csv      = f'3d_{start_frame}_{end_frame_val}.csv'
 
     console.print(
         Panel(
@@ -113,6 +115,7 @@ def main():
     cfg_table.add_row( 'Start frame',   str( start_frame ) )
     cfg_table.add_row( 'End frame',     str( end_frame ) if end_frame is not None else '(all)' )
     cfg_table.add_row( 'Vis thresh',    str( cam_thresholds ) if cam_thresholds else str( default_thresh ) )
+    cfg_table.add_row( 'Output CSV',    output_csv )
     console.print( cfg_table )
     console.print()
 
@@ -150,26 +153,22 @@ def main():
         console.print( '[bold red]No valid cameras found.[/bold red]' )
         raise SystemExit( 1 )
 
-    # ── CSV 読み込み ──────────────────────────────────────
+    # ── ランドマーク読み込み（sync_config.json の pose3d.landmarks から）──
 
     mp_dataframes: dict[ str, pd.DataFrame ] = {}
 
     for cam_name, ci in cam_indices:
-        # sync_config.json の csv_paths を優先、なければ cam_name.csv
-        if cam_name in csv_paths:
-            csv_path = Path( csv_paths[ cam_name ] )
-        else:
-            csv_path = Path( f'{cam_name}.csv' )
-        if not csv_path.exists():
-            console.print( f'[yellow]{cam_name}.csv not found, skipping[/yellow]' )
+        lm_entry = landmarks_store.get( cam_name )
+        if not lm_entry:
+            console.print( f'[yellow]{cam_name}: landmarks not found in sync_config.json, skipping[/yellow]' )
             continue
-        df = pd.read_csv( csv_path )
+        df = pd.DataFrame( lm_entry[ 'data' ], columns = lm_entry[ 'columns' ] )
         df = df[ df[ 'frame' ] >= start_frame ]
         if end_frame is not None:
             df = df[ df[ 'frame' ] <= end_frame ]
         df = df.reset_index( drop = True )
         mp_dataframes[ cam_name ] = ( ci, df )
-        console.print( f'[dim]{cam_name}.csv: {len(df)} rows (frames {start_frame}–{end_frame})[/dim]' )
+        console.print( f'[dim]{cam_name}: {len(df)} rows (frames {start_frame}–{end_frame})[/dim]' )
 
     if not mp_dataframes:
         console.print( '[bold red]No CSV data loaded.[/bold red]' )

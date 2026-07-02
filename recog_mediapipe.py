@@ -328,9 +328,8 @@ def pose_recog_from_config( config: dict, model_path: Path ):
             cap.release()
 
     df = pd.DataFrame( records )
-    df.to_csv( output_csv, index = False )
 
-    # sync_config.json の pose3d.csv_paths にカメラ名と CSV パスを記録する
+    # CSV は出力せず sync_config.json に直接書き込む
     cam_name = config.get( 'cam_name' )
     if cam_name:
         try:
@@ -339,17 +338,23 @@ def pose_recog_from_config( config: dict, model_path: Path ):
             _cfg = _json.loads( _cfg_p.read_text( encoding='utf-8' ) ) if _cfg_p.exists() else {}
             if 'pose3d' not in _cfg:
                 _cfg[ 'pose3d' ] = {}
-            if 'csv_paths' not in _cfg[ 'pose3d' ]:
-                _cfg[ 'pose3d' ][ 'csv_paths' ] = {}
-            _cfg[ 'pose3d' ][ 'csv_paths' ][ cam_name ] = str( _Path2( output_csv ).resolve() )
+            if 'landmarks' not in _cfg[ 'pose3d' ]:
+                _cfg[ 'pose3d' ][ 'landmarks' ] = {}
+            # カラム名 + データ配列（列指向で保存）
+            _cfg[ 'pose3d' ][ 'landmarks' ][ cam_name ] = {
+                'columns': df.columns.tolist(),
+                'data':    df.values.tolist(),
+            }
             _cfg_p.write_text( _json.dumps( _cfg, indent=2, ensure_ascii=False ), encoding='utf-8' )
-        except Exception:
-            pass
-    console.print()
-    console.print(
-        f'[bold green]✓[/bold green] Saved [cyan]{output_csv}[/cyan] '
-        f'([white]{len(df):,}[/white] rows × [white]{len(df.columns):,}[/white] columns)'
-    )
+            console.print()
+            console.print(
+                f'[bold green]✓[/bold green] Saved [cyan]{cam_name}[/cyan] landmarks '
+                f'([white]{len(df):,}[/white] frames) → [cyan]sync_config.json[/cyan]'
+            )
+        except Exception as e:
+            console.print( f'[red]ERROR saving to sync_config.json: {e}[/red]' )
+    else:
+        console.print( '[yellow]cam_name not set — landmarks not saved[/yellow]' )
 
 
 def parse_video_names( argv ):

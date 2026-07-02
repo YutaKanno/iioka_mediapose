@@ -477,7 +477,7 @@ def main():
     _wand_csv_path      = _calib_cfg.get( 'wand_csv', 'wand_annotations.csv' )
     _start_frames_cfg   = _calib_cfg.get( 'start_frames_per_cam', {} )
     _max_calib_frames   = _calib_cfg.get( 'max_calib_frames', None )
-    _csv_paths          = _pose3d_cfg.get( 'csv_paths', {} )   # Step 2 で生成された CSV パス
+    _landmarks_store    = _pose3d_cfg.get( 'landmarks', {} )   # Step 2 で sync_config.json に保存されたランドマーク
 
     console.print( f'[dim]Wand CSV      : {_wand_csv_path}[/dim]' )
     console.print( f'[dim]Start frames  : {_start_frames_cfg}[/dim]' )
@@ -515,22 +515,19 @@ def main():
 
     n_wand_point = point_index
 
-    # Step 2 で生成した CSV を読む（csv_paths があればそちらを優先）
+    # Step 2 で sync_config.json に保存されたランドマークを読み込む
     mp_dataframes = []
     for name in camera_names:
-        csv_p = _csv_paths.get( name )
-        if csv_p and _Path( csv_p ).exists():
-            mp_dataframes.append( pd.read_csv( csv_p ) )
-            console.print( f'[dim]{name}: loaded from {csv_p}[/dim]' )
+        lm_entry = _landmarks_store.get( name )
+        if lm_entry:
+            df = pd.DataFrame( lm_entry[ 'data' ], columns = lm_entry[ 'columns' ] )
+            mp_dataframes.append( df )
+            console.print( f'[dim]{name}: loaded from sync_config.json ({len(df)} rows)[/dim]' )
         else:
-            fallback = _Path( f'{name}.csv' )
-            if fallback.exists():
-                mp_dataframes.append( pd.read_csv( fallback ) )
-                console.print( f'[dim]{name}: loaded from {fallback} (fallback)[/dim]' )
-            else:
-                raise FileNotFoundError(
-                    f'{name} の CSV が見つかりません。先に Step 2: Pose Recognition を実行してください。'
-                )
+            raise FileNotFoundError(
+                f'{name} のランドマークが sync_config.json にありません。'
+                f'先に Step 2: Pose Recognition を実行してください。'
+            )
 
     # start_frames_per_cam フィルタ: キャリブレーション開始フレーム以降のみ使用
     for ci, name in enumerate( camera_names ):

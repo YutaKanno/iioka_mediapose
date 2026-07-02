@@ -1166,12 +1166,12 @@ class SyncApp:
                 config = {
                     'cam_name':       cam_name,
                     'video_segments': segments,
-                    'output_csv':     f'{cam_name}.csv',
                     'synced_start':   start_s,
                     'det_conf':       self.pose_det_conf.get(),
                     'pres_conf':      self.pose_det_conf.get(),
                     'track_conf':     self.pose_det_conf.get(),
                     # vis_thresh なし: 全ランドマークを保存
+                    # 結果は sync_config.json の pose3d.landmarks に保存（CSV不要）
                 }
 
                 cfg_file = scratchpad / f'{cam_name}_mediapipe_config.json'
@@ -1241,13 +1241,12 @@ class SyncApp:
             return
 
         config = {
+            'cam_name':       cam_name,
             'video_segments': segments,
-            'output_csv':     f'{cam_name}.csv',
             'synced_start':   start_s,
             'det_conf':       self.pose_det_conf.get(),
             'pres_conf':      self.pose_det_conf.get(),
             'track_conf':     self.pose_det_conf.get(),
-            'vis_thresh':     self.pose_rerun_thresh.get(),
         }
 
         cfg_file = scratchpad / f'{cam_name}_rerun_config.json'
@@ -1413,23 +1412,16 @@ class SyncApp:
                        vis_thresh: float = 0.0) -> np.ndarray:
         """CSV データからスケルトンを img に描画して返す。"""
         if cam_name not in self._pose_csv_data:
-            # sync_config.json のパスを優先して探す
-            csv_path = None
-            try:
-                cfg = json.loads(Path(self._json_path).read_text(encoding='utf-8'))
-                csv_paths = cfg.get('pose3d', {}).get('csv_paths', {})
-                if cam_name in csv_paths:
-                    csv_path = Path(csv_paths[cam_name])
-            except Exception:
-                pass
-            if csv_path is None or not csv_path.exists():
-                csv_path = Path(f'{cam_name}.csv')
-            if not csv_path.exists():
-                return img_rgb
+            # sync_config.json の pose3d.landmarks から読み込む
             try:
                 import pandas as pd
-                df = pd.read_csv(csv_path)
-                self._pose_csv_data[cam_name] = df
+                cfg = json.loads(Path(self._json_path).read_text(encoding='utf-8'))
+                lm_entry = cfg.get('pose3d', {}).get('landmarks', {}).get(cam_name)
+                if lm_entry:
+                    df = pd.DataFrame(lm_entry['data'], columns=lm_entry['columns'])
+                    self._pose_csv_data[cam_name] = df
+                else:
+                    return img_rgb
             except Exception:
                 return img_rgb
 
@@ -1663,14 +1655,20 @@ class SyncApp:
                 return -1
 
         def _worker():
+            sf = self.pose_start_frame.get()
+            ef = self.pose_end_frame.get()
+            tri_csv = f'3d_{sf}_{ef}.csv'
+            proc_csv = f'3d_{sf}_{ef}_processed.csv'
+            html_out = f'3d_{sf}_{ef}.html'
+
             rc = _run_step([sys.executable, 'triangulate_only.py'], 'triangulate_only')
             if rc != 0:
                 self._recon_log_queue.put(('__done__', '3D reconstruction', rc))
                 return
             rc = _run_step([
                 sys.executable, 'process_landmarks_3d.py',
-                '--input', 'landmarks_3d.csv',
-                '--output', 'landmarks_3d_processed.csv',
+                '--input', tri_csv,
+                '--output', proc_csv,
                 '--drop-first-frames', '0',
             ], 'process_landmarks_3d')
             if rc != 0:
@@ -1678,13 +1676,13 @@ class SyncApp:
                 return
             rc = _run_step([
                 sys.executable, 'make_3d_plot.py',
-                '--input', 'landmarks_3d_processed.csv',
-                '--output', 'stick_figure_3d.html',
+                '--input', proc_csv,
+                '--output', html_out,
             ], 'make_3d_plot')
             self._recon_log_queue.put(('__done__', '3D reconstruction', rc))
             if rc == 0:
                 import webbrowser
-                webbrowser.open(Path('stick_figure_3d.html').resolve().as_uri())
+                webbrowser.open(Path(html_out).resolve().as_uri())
 
         threading.Thread(target=_worker, daemon=True).start()
         self.root.after(100, self._poll_recon_log)
