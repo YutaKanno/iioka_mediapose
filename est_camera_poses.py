@@ -460,21 +460,24 @@ def plot_camera_poses( cam_positions, names, output_path = 'camera_poses.png' ):
 
 def main():
 
-    # sync_config.json にキャリブレーション設定があれば読み込む
+    # sync_config.json からキャリブレーション設定・CSV パスを読み込む
     import json as _json
-    _calib_cfg: dict = {}
-    _cfg_path = Path( 'sync_config.json' ) if 'Path' in dir() else None
-    try:
-        from pathlib import Path as _Path
-        _cfg_file = _Path( 'sync_config.json' )
-        if _cfg_file.exists():
-            _calib_cfg = _json.loads( _cfg_file.read_text( encoding='utf-8' ) ).get( 'calib', {} )
-    except Exception:
-        pass
+    from pathlib import Path as _Path
+    _cfg_file = _Path( 'sync_config.json' )
+    _cfg_all: dict = {}
+    if _cfg_file.exists():
+        try:
+            _cfg_all = _json.loads( _cfg_file.read_text( encoding='utf-8' ) )
+        except Exception:
+            pass
+
+    _calib_cfg          = _cfg_all.get( 'calib', {} )
+    _pose3d_cfg         = _cfg_all.get( 'pose3d', {} )
 
     _wand_csv_path      = _calib_cfg.get( 'wand_csv', 'wand_annotations.csv' )
-    _start_frames_cfg   = _calib_cfg.get( 'start_frames_per_cam', {} )   # {'cam1': N, ...}
+    _start_frames_cfg   = _calib_cfg.get( 'start_frames_per_cam', {} )
     _max_calib_frames   = _calib_cfg.get( 'max_calib_frames', None )
+    _csv_paths          = _pose3d_cfg.get( 'csv_paths', {} )   # Step 2 で生成された CSV パス
 
     console.print( f'[dim]Wand CSV      : {_wand_csv_path}[/dim]' )
     console.print( f'[dim]Start frames  : {_start_frames_cfg}[/dim]' )
@@ -512,9 +515,24 @@ def main():
 
     n_wand_point = point_index
 
-    mp_dataframes = [ pd.read_csv( f'{name}.csv' ) for name in camera_names ]
+    # Step 2 で生成した CSV を読む（csv_paths があればそちらを優先）
+    mp_dataframes = []
+    for name in camera_names:
+        csv_p = _csv_paths.get( name )
+        if csv_p and _Path( csv_p ).exists():
+            mp_dataframes.append( pd.read_csv( csv_p ) )
+            console.print( f'[dim]{name}: loaded from {csv_p}[/dim]' )
+        else:
+            fallback = _Path( f'{name}.csv' )
+            if fallback.exists():
+                mp_dataframes.append( pd.read_csv( fallback ) )
+                console.print( f'[dim]{name}: loaded from {fallback} (fallback)[/dim]' )
+            else:
+                raise FileNotFoundError(
+                    f'{name} の CSV が見つかりません。先に Step 2: Pose Recognition を実行してください。'
+                )
 
-    # start_frames_per_cam フィルタ: 指定フレーム以降のみ使用
+    # start_frames_per_cam フィルタ: キャリブレーション開始フレーム以降のみ使用
     for ci, name in enumerate( camera_names ):
         sf = _start_frames_cfg.get( name )
         if sf is not None:
@@ -528,12 +546,17 @@ def main():
         col[ : -2 ] for col in mp_dataframes[ 0 ].columns if col.endswith( '_v' )
     ]
 
-    frame_list = mp_dataframes[ 0 ][ 'frame' ].values[ : : frame_step ]
+    # BA に使うフレームをランダムサンプリング（v_thresh 以上のランドマークが多いフレームを優先）
+    all_frames = mp_dataframes[ 0 ][ 'frame' ].values
+    rng = np.random.default_rng( 42 )
 
-    # max_calib_frames: BA に使うフレーム数の上限（実行時間制御）
-    if _max_calib_frames is not None and len( frame_list ) > _max_calib_frames:
-        frame_list = frame_list[ : _max_calib_frames ]
-        console.print( f'[dim]BA frame list truncated to {_max_calib_frames} frames[/dim]' )
+    if _max_calib_frames is not None and len( all_frames ) > _max_calib_frames:
+        frame_list = rng.choice( all_frames, size=_max_calib_frames, replace=False )
+        frame_list = np.sort( frame_list )
+        console.print( f'[dim]BA frame list: random {_max_calib_frames} / {len(all_frames)} frames[/dim]' )
+    else:
+        frame_list = all_frames
+        console.print( f'[dim]BA frame list: all {len(frame_list)} frames[/dim]' )
     console.print()
 
     for frame in frame_list:

@@ -397,12 +397,12 @@ class SyncApp:
         # ── Notebook（残りのスペースを使う）──────
         self.nb = ttk.Notebook(self.root)
         self.nb.pack(fill='both', expand=True, padx=6, pady=(0, 6))
-        self._build_sync_tab()
-        self._build_calib_tab()
-        self._build_results_tab()
-        self._build_pose3d_tab()
-        self._build_stick_check_tab()
-        self._build_pose5_tab()
+        self._build_sync_tab()          # Step 1: Sync
+        self._build_pose3d_tab()        # Step 2: Pose Recognition
+        self._build_stick_check_tab()   # Step 3: Stick Check（閾値確認）
+        self._build_calib_tab()         # Step 4: Calibration
+        self._build_results_tab()       # Step 5: Results
+        self._build_pose5_tab()         # Step 6: 3D Recon
         self.nb.bind('<<NotebookTabChanged>>', self._on_tab_change)
 
     def _build_sync_tab(self):
@@ -428,7 +428,7 @@ class SyncApp:
 
     def _build_calib_tab(self):
         tab = ttk.Frame(self.nb, padding=8)
-        self.nb.add(tab, text='  Step 2: Calibration  ')
+        self.nb.add(tab, text='  Step 4: Calibration  ')
 
         # Wand CSV 選択
         csv_row = ttk.Frame(tab)
@@ -484,7 +484,7 @@ class SyncApp:
 
     def _build_results_tab(self):
         tab = ttk.Frame(self.nb, padding=8)
-        self.nb.add(tab, text='  Step 3: Results  ')
+        self.nb.add(tab, text='  Step 5: Results  ')
 
         # ツールバー
         tb = ttk.Frame(tab)
@@ -993,7 +993,7 @@ class SyncApp:
 
     def _build_pose3d_tab(self):
         tab = ttk.Frame(self.nb, padding=8)
-        self.nb.add(tab, text='  Step 4: Pose Recognition  ')
+        self.nb.add(tab, text='  Step 2: Pose Recognition  ')
 
         # 1. 設定フレーム
         settings_frame = ttk.LabelFrame(tab, text='Settings', padding=6)
@@ -1285,9 +1285,9 @@ class SyncApp:
             idx = self.nb.index(self.nb.select())
         except Exception:
             return
-        if idx == 4 and self.synced:   # Step 5: Stick Check
+        if idx == 2 and self.synced:   # Step 3: Stick Check
             self._enter_pose_preview_mode()
-        elif idx != 4 and self.in_pose_preview_mode:
+        elif idx != 2 and self.in_pose_preview_mode:
             self._exit_pose_preview_mode(restore_view=False)
             self._enter_single_view(self._get_cam_idx())
 
@@ -1485,7 +1485,7 @@ class SyncApp:
 
     def _build_stick_check_tab(self):
         tab = ttk.Frame(self.nb, padding=8)
-        self.nb.add(tab, text='  Step 5: Stick Check  ')
+        self.nb.add(tab, text='  Step 3: Stick Check  ')
 
         ttk.Label(tab,
             text='▲ 上パネルに映像 + スティックフィギュアをフレーム同期表示します（スライダーで操作）',
