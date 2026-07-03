@@ -424,7 +424,9 @@ class SyncApp:
                                width=7, justify='center')
         sync_entry.pack(side='left', padx=(6, 2))
         sync_entry.bind('<Return>',
-                        lambda e: self.synced and self._sync_all_to(self.sync_nav_var.get()))
+                        lambda e: self._wand_show_frame(self.sync_nav_var.get())
+                        if self._wand_active else
+                        (self.synced and self._sync_all_to(self.sync_nav_var.get())))
 
         self.sync_pos_label = ttk.Label(nav_bar, text='/ --', width=8)
         self.sync_pos_label.pack(side='left')
@@ -601,6 +603,13 @@ class SyncApp:
         if self._slider_updating:
             return
         pos = int(float(val))
+        if self._wand_active:
+            try:
+                cam_idx = int(self.wand_cam_var.get().replace('cam', '')) - 1
+            except ValueError:
+                cam_idx = 0
+            self._wand_show_frame(self.sync_offsets[cam_idx] + pos)
+            return
         if self.synced:
             self._sync_all_to(pos)
 
@@ -2058,6 +2067,12 @@ class SyncApp:
 
         self._wand_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, img = self._wand_cap.read()
+        if not ret and self._wand_cap_path:
+            # キャップ再オープンしてリトライ（Windowsコーデック対策）
+            self._wand_cap.release()
+            self._wand_cap = cv2.VideoCapture(self._wand_cap_path)
+            self._wand_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, img = self._wand_cap.read()
         if not ret:
             return
 
