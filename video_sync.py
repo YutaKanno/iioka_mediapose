@@ -17,6 +17,16 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 
+# Windows コンソールを UTF-8 に強制（UnicodeEncodeError 防止）
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except AttributeError:
+        import io as _io
+        sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = _io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 # FFmpeg のフレームスレッディングを無効化（H264 マルチスレッド時の double-free 防止）
 os.environ.setdefault('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'threads;1')
 
@@ -288,6 +298,7 @@ class SyncApp:
         self._json_path       = 'sync_config.json'
         self.calib_wand_csv   = tk.StringVar(value='wand_annotations.csv')
         self.calib_start_frame = tk.IntVar(value=0)
+        self.calib_n_frames    = tk.IntVar(value=30)    # キャリブ用スキャンフレーム数
         self.calib_max_frames  = tk.IntVar(value=500)
         self._log_queue: queue.Queue | None = None
         self._calib_running   = False
@@ -315,6 +326,24 @@ class SyncApp:
         self._pose_skel_photo = None
         self.in_pose_preview_mode = False
 
+        # ── Wand Annotation 関連変数 ──────────────
+        self.wand_pose_names    = ['pose1', 'pose2', 'pose3', 'pose4', 'pose5']
+        self.wand_point_labels  = ['0.0m', '0.5m', '1.0m', '1.5m']
+        self.wand_cam_var       = tk.StringVar(value='cam1')
+        self.wand_pose_idx      = 0
+        self.wand_click_mode    = False
+        self.wand_clicked_pts   = []   # [(u, v), ...] 画像ピクセル座標
+        self._wand_cap          = None
+        self._wand_cap_path     = ''
+        self._wand_frame_idx    = 0
+        self._wand_total_frames = 0
+        self._wand_photo        = None
+        self._wand_img_scale    = 1.0
+        self._wand_img_offset   = (0, 0)
+        self._wand_img_size     = (1920, 1080)
+        self.wand_annotations   = {}   # (cam, pose, label) → {'frame', 'u', 'v'}
+        self._wand_active       = False
+
         self._build_ui()
         self._bind_keys()
 
@@ -340,6 +369,20 @@ class SyncApp:
             bg='white', highlightthickness=0,
         )
         self._skel_canvas.pack(fill='both', expand=True)
+
+        # Wand Annotation 用キャンバス（panel_area 全面に配置、初期は非表示）
+        self._wand_panel_lf = ttk.LabelFrame(self.panel_area, text='Wand Annotation', padding=2)
+        self._wand_panel_canvas = tk.Canvas(
+            self._wand_panel_lf, bg='#1a1a1a', cursor='crosshair',
+            highlightthickness=0,
+        )
+        self._wand_panel_canvas.pack(fill='both', expand=True)
+        self._wand_panel_canvas.bind('<Button-1>', self._wand_on_canvas_click)
+        self._wand_panel_canvas.bind(
+            '<Configure>',
+            lambda e: self._wand_show_frame(self._wand_frame_idx)
+            if self._wand_active and self._wand_cap else None,
+        )
 
         # ── 共通同期ナビバー ──────────────────────
         nav_bar = ttk.Frame(self.root, padding=(8, 2))
@@ -398,11 +441,12 @@ class SyncApp:
         self.nb = ttk.Notebook(self.root)
         self.nb.pack(fill='both', expand=True, padx=6, pady=(0, 6))
         self._build_sync_tab()          # Step 1: Sync
-        self._build_pose3d_tab()        # Step 2: Pose Recognition
-        self._build_stick_check_tab()   # Step 3: Stick Check（閾値確認）
-        self._build_calib_tab()         # Step 4: Calibration
-        self._build_results_tab()       # Step 5: Results
-        self._build_pose5_tab()         # Step 6: 3D Recon
+        self._build_wand_tab()          # Step 2: Wand Annotation
+        self._build_calib_tab()         # Step 3: Calibration
+        self._build_results_tab()       # Step 4: Results
+        self._build_pose3d_tab()        # Step 5: Pose Recognition
+        self._build_stick_check_tab()   # Step 6: Stick Check（閾値確認）
+        self._build_pose5_tab()         # Step 7: 3D Recon
         self.nb.bind('<<NotebookTabChanged>>', self._on_tab_change)
 
     def _build_sync_tab(self):
@@ -428,18 +472,19 @@ class SyncApp:
 
     def _build_calib_tab(self):
         tab = ttk.Frame(self.nb, padding=8)
-        self.nb.add(tab, text='  Step 4: Calibration  ')
+        self.nb.add(tab, text='  Step 3: Calibration  ')
 
-        # Wand CSV 選択
+        # Wand CSV 選択（任意）
         csv_row = ttk.Frame(tab)
         csv_row.pack(fill='x', pady=(0, 4))
-        ttk.Label(csv_row, text='Wand CSV:').pack(side='left')
+        ttk.Label(csv_row, text='Wand CSV (Optional):').pack(side='left')
         ttk.Entry(csv_row, textvariable=self.calib_wand_csv,
-                  width=40).pack(side='left', padx=4)
+                  width=38).pack(side='left', padx=4)
         ttk.Button(csv_row, text='📂 Browse',
                    command=self._browse_wand_csv).pack(side='left')
+        ttk.Label(csv_row, text='（なくても可）', foreground='gray').pack(side='left', padx=4)
 
-        # Start frame + Max frames
+        # Start frame + 推定フレーム数 + BA最大フレーム数
         param_row = ttk.Frame(tab)
         param_row.pack(fill='x', pady=(0, 6))
         ttk.Label(param_row, text='Start frame (synced):').pack(side='left')
@@ -447,12 +492,15 @@ class SyncApp:
                   width=8, justify='center').pack(side='left', padx=4)
         ttk.Button(param_row, text='← 現在位置',
                    command=lambda: self.calib_start_frame.set(self.sync_pos)
-                   ).pack(side='left', padx=(0, 16))
-        ttk.Label(param_row, text='最大フレーム数:').pack(side='left')
+                   ).pack(side='left', padx=(0, 12))
+        ttk.Label(param_row, text='推定フレーム数:').pack(side='left')
+        ttk.Entry(param_row, textvariable=self.calib_n_frames,
+                  width=6, justify='center').pack(side='left', padx=4)
+        ttk.Label(param_row, text='BA最大:').pack(side='left', padx=(8, 0))
         ttk.Entry(param_row, textvariable=self.calib_max_frames,
-                  width=8, justify='center').pack(side='left', padx=4)
+                  width=6, justify='center').pack(side='left', padx=4)
         ttk.Label(param_row,
-                  text='(BA に使う MediaPipe フレーム数の上限)',
+                  text='(Run Cal でN フレームをスキャン → 人検出 & v≥0.95 のフレームのみでキャリブ)',
                   foreground='gray').pack(side='left', padx=4)
 
         # Run ボタン
@@ -484,7 +532,7 @@ class SyncApp:
 
     def _build_results_tab(self):
         tab = ttk.Frame(self.nb, padding=8)
-        self.nb.add(tab, text='  Step 5: Results  ')
+        self.nb.add(tab, text='  Step 4: Results  ')
 
         # ツールバー
         tb = ttk.Frame(tab)
@@ -685,9 +733,9 @@ class SyncApp:
         )
         self._autosave()
         self._enter_single_view(0)
-        self.nb.select(1)
+        self.nb.select(1)   # → Step 2: Wand Annotation
 
-    # ── Step 2: Calibration ───────────────────────
+    # ── Step 3: Calibration ───────────────────────
     def _browse_wand_csv(self):
         p = filedialog.askopenfilename(
             title='Select wand_annotations.csv',
@@ -700,12 +748,31 @@ class SyncApp:
         if not self.synced:
             messagebox.showerror('Error', '先に Step 1 で Sync を行ってください。')
             return
-        if not self.calib_wand_csv.get():
-            messagebox.showerror('Error', 'Wand CSV ファイルを選択してください。')
-            return
         if self._calib_running:
             messagebox.showinfo('Info', 'キャリブレーション実行中です。')
             return
+
+        # 動画が読み込まれているアクティブカメラを収集
+        enabled_panels = [
+            (i, self.panels[i])
+            for i in range(N_CAMS)
+            if self.pose_cam_enabled[i].get() and self.panels[i].caps
+        ]
+        if not enabled_panels:
+            messagebox.showerror('Error', '動画が読み込まれているアクティブカメラがありません。')
+            return
+
+        # キャリブ用スキャン範囲を決定（連続スキャン → 検出フレームのみ BA で使用）
+        start_s  = self.calib_start_frame.get()
+        n_frames = self.calib_n_frames.get()
+        max_avail = 0
+        for cam_i, panel in enabled_panels:
+            avail = panel.total_frames - 1 - self.sync_offsets[cam_i] - start_s
+            max_avail = max(max_avail, avail)
+        if max_avail <= 0:
+            messagebox.showerror('Error', 'スタートフレーム以降に利用可能なフレームがありません。')
+            return
+        actual_n = min(n_frames, max_avail)
 
         # sync_config.json にキャリブレーション設定を保存（マージ方式）
         try:
@@ -714,17 +781,16 @@ class SyncApp:
         except (FileNotFoundError, json.JSONDecodeError):
             existing_cfg = {}
         cfg = self._build_json()
-        # cameras パス保持
         if 'cameras' in existing_cfg and 'cameras' in cfg:
             for old_c, new_c in zip(existing_cfg['cameras'], cfg['cameras']):
                 if not new_c.get('paths') and old_c.get('paths'):
                     new_c['paths'] = old_c['paths']
                     new_c.setdefault('total_frames', old_c.get('total_frames', 0))
-        # calib 深マージ＋ start_frames_per_cam 追加
         old_calib = existing_cfg.get('calib', {})
         cfg['calib'] = {**old_calib, **cfg.get('calib', {})}
+        # start_frames_per_cam: スキャン開始フレーム（検出済みフレームは est_camera_poses で絞込）
         cfg['calib']['start_frames_per_cam'] = {
-            f'cam{i + 1}': self.sync_offsets[i] + self.calib_start_frame.get()
+            f'cam{i + 1}': start_s
             for i in range(N_CAMS)
             if self.panels[i].caps
         }
@@ -739,12 +805,78 @@ class SyncApp:
 
         self._calib_running = True
         self.run_calib_btn.config(state='disabled')
-        self.calib_progress.set('実行中…')
-        self.status_var.set('Calibration running…')
+        self.calib_progress.set('ポーズ推定中…')
+        self.status_var.set('Calibration: pose estimation…')
 
         self._log_queue = queue.Queue()
 
         def _worker():
+            import json as _json
+            total_cams = len(enabled_panels)
+
+            # ── Step 1: 各カメラで連続範囲スキャン → 人検出フレームのみ保存 ──────────
+            for step_i, (cam_i, panel) in enumerate(enabled_panels):
+                cam_name = f'cam{cam_i + 1}'
+                self._log_queue.put(
+                    f'--- {cam_name} ポーズ推定 ({step_i + 1}/{total_cams}) ---\n'
+                )
+
+                # 連続範囲スキャン: start_s から actual_n フレームをカメラローカル座標に変換
+                segments = []
+                frames_remaining = actual_n
+                for seg_i, path in enumerate(panel.paths):
+                    if frames_remaining <= 0:
+                        break
+                    seg_start_abs = panel.cum_frames[seg_i]
+                    cam_start_local = self.sync_offsets[cam_i] + start_s
+                    cam_end_local   = self.sync_offsets[cam_i] + start_s + actual_n
+                    local_start = max(0, cam_start_local - seg_start_abs)
+                    local_end   = min(panel.segment_frames[seg_i], cam_end_local - seg_start_abs)
+                    if local_end <= local_start:
+                        continue
+                    segments.append({'path': path, 'start': local_start, 'end': local_end})
+                    frames_remaining -= (local_end - local_start)
+
+                if not segments:
+                    self._log_queue.put(f'  {cam_name}: 有効フレームなし、スキップ\n')
+                    continue
+
+                config = {
+                    'cam_name':       cam_name,
+                    'video_segments': segments,
+                    'synced_start':   start_s,
+                    'det_conf':       self.pose_det_conf.get(),
+                    'pres_conf':      self.pose_det_conf.get(),
+                    'track_conf':     self.pose_det_conf.get(),
+                    'save_to':        'calib',   # calib.landmarks に保存（人未検出フレームは除去）
+                }
+                cfg_file = Path(f'_calib_{cam_name}_config.json')
+                cfg_file.write_text(
+                    _json.dumps(config, indent=2, ensure_ascii=False), encoding='utf-8')
+
+                try:
+                    proc = subprocess.Popen(
+                        [sys.executable, 'recog_mediapipe.py', '--config', str(cfg_file)],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, bufsize=1, encoding='utf-8', errors='replace',
+                    )
+                    for line in proc.stdout:
+                        self._log_queue.put(strip_ansi(line))
+                    proc.wait()
+                    cfg_file.unlink(missing_ok=True)
+                    if proc.returncode != 0:
+                        self._log_queue.put(
+                            f'  {cam_name}: ポーズ推定失敗 (code={proc.returncode})\n')
+                        self._log_queue.put(('__done__', proc.returncode))
+                        return
+                except Exception as ex:
+                    self._log_queue.put(f'  ERROR: {ex}\n')
+                    self._log_queue.put(('__done__', -1))
+                    return
+
+            # ── Step 2: Bundle Adjustment ────────────────────────────────
+            self._log_queue.put(('__progress__', 'キャリブレーション中…'))
+            self._log_queue.put('\n--- キャリブレーション (Bundle Adjustment) ---\n')
             try:
                 proc = subprocess.Popen(
                     [sys.executable, 'est_camera_poses.py'],
@@ -769,6 +901,9 @@ class SyncApp:
                 if isinstance(item, tuple) and item[0] == '__done__':
                     self._on_calibration_complete(item[1])
                     return
+                if isinstance(item, tuple) and item[0] == '__progress__':
+                    self.calib_progress.set(item[1])
+                    continue
                 # text line
                 self.calib_log.config(state='normal')
                 self.calib_log.insert('end', item)
@@ -785,12 +920,12 @@ class SyncApp:
             self.calib_progress.set('✓ 完了')
             self.status_var.set('Calibration complete.')
             self._load_results()
-            self.nb.select(2)
+            self.nb.select(3)   # → Step 4: Results
         else:
             self.calib_progress.set(f'✗ 終了コード {returncode}')
             self.status_var.set(f'Calibration failed (code={returncode})')
 
-    # ── Step 3: Results ──────────────────────────
+    # ── Step 4: Results ──────────────────────────
     def _load_results(self):
         npz_path = Path('camera_calibration.npz')
         if not npz_path.exists():
@@ -993,7 +1128,7 @@ class SyncApp:
 
     def _build_pose3d_tab(self):
         tab = ttk.Frame(self.nb, padding=8)
-        self.nb.add(tab, text='  Step 2: Pose Recognition  ')
+        self.nb.add(tab, text='  Step 5: Pose Recognition  ')
 
         # 1. 設定フレーム
         settings_frame = ttk.LabelFrame(tab, text='Settings', padding=6)
@@ -1124,12 +1259,6 @@ class SyncApp:
             self.run_mediapipe_btn.config(state='normal')
             return
 
-        scratchpad = Path(
-            '/private/tmp/claude-501/-Users-yutakanno-Documents-py26--0624-mediapose'
-            '/429e0156-6810-42de-92fa-8be9eb7c8abf/scratchpad'
-        )
-        scratchpad.mkdir(parents=True, exist_ok=True)
-
         self._pose_log_queue = queue.Queue()
 
         def _worker():
@@ -1174,7 +1303,7 @@ class SyncApp:
                     # 結果は sync_config.json の pose3d.landmarks に保存（CSV不要）
                 }
 
-                cfg_file = scratchpad / f'{cam_name}_mediapipe_config.json'
+                cfg_file = Path(f'_{cam_name}_mediapipe_config.json')
                 import json as _json
                 cfg_file.write_text(
                     _json.dumps(config, indent=2, ensure_ascii=False),
@@ -1190,10 +1319,12 @@ class SyncApp:
                     for line in proc.stdout:
                         self._pose_log_queue.put(strip_ansi(line))
                     proc.wait()
+                    cfg_file.unlink(missing_ok=True)
                     if proc.returncode != 0:
                         self._pose_log_queue.put(
                             f'  {cam_name}: 失敗 (code={proc.returncode})\n')
                 except Exception as ex:
+                    cfg_file.unlink(missing_ok=True)
                     self._pose_log_queue.put(f'  ERROR: {ex}\n')
 
                 self._pose_log_queue.put(f'  {cam_name}: 完了\n')
@@ -1216,12 +1347,6 @@ class SyncApp:
         if not panel.caps:
             messagebox.showerror('Error', f'{cam_name} に動画が読み込まれていません。')
             return
-
-        scratchpad = Path(
-            '/private/tmp/claude-501/-Users-yutakanno-Documents-py26--0624-mediapose'
-            '/429e0156-6810-42de-92fa-8be9eb7c8abf/scratchpad'
-        )
-        scratchpad.mkdir(parents=True, exist_ok=True)
 
         start_s = self.pose_start_frame.get()
         end_s   = self.pose_end_frame.get()
@@ -1249,7 +1374,7 @@ class SyncApp:
             'track_conf':     self.pose_det_conf.get(),
         }
 
-        cfg_file = scratchpad / f'{cam_name}_rerun_config.json'
+        cfg_file = Path(f'_{cam_name}_rerun_config.json')
         import json as _json
         cfg_file.write_text(
             _json.dumps(config, indent=2, ensure_ascii=False), encoding='utf-8')
@@ -1268,8 +1393,10 @@ class SyncApp:
                 for line in proc.stdout:
                     self._pose_log_queue.put(strip_ansi(line))
                 proc.wait()
+                cfg_file.unlink(missing_ok=True)
                 self._pose_log_queue.put(('__done__', f'{cam_name} re-run', proc.returncode))
             except Exception as ex:
+                cfg_file.unlink(missing_ok=True)
                 self._pose_log_queue.put(f'ERROR: {ex}\n')
                 self._pose_log_queue.put(('__done__', f'{cam_name} re-run', -1))
 
@@ -1279,16 +1406,32 @@ class SyncApp:
     # ── ポーズプレビューモード ──────────────────────
 
     def _on_tab_change(self, event=None):
-        """ノートブックタブ切替時にポーズプレビューモードを制御する。"""
+        """ノートブックタブ切替時に各モード（Stick Check / Wand）を制御する。"""
         try:
             idx = self.nb.index(self.nb.select())
         except Exception:
             return
-        if idx == 2 and self.synced:   # Step 3: Stick Check
+
+        entering_wand  = (idx == 1)   # Step 2: Wand Annotation
+        entering_stick = (idx == 5)   # Step 6: Stick Check
+
+        # ワンドモード終了
+        if not entering_wand and self._wand_active:
+            self._exit_wand_mode()
+            if not entering_stick:
+                self._enter_multi_view()
+
+        # Stick Check モード制御
+        if entering_stick and self.synced:
             self._enter_pose_preview_mode()
-        elif idx != 2 and self.in_pose_preview_mode:
+        elif not entering_stick and self.in_pose_preview_mode:
             self._exit_pose_preview_mode(restore_view=False)
-            self._enter_single_view(self._get_cam_idx())
+            if not entering_wand:
+                self._enter_single_view(self._get_cam_idx())
+
+        # ワンドアノテーションモード開始
+        if entering_wand:
+            self._wand_on_tab_enter()
 
     def _enter_pose_preview_mode(self):
         """panel_area を [映像 | スティックフィギュア] 横並びに切り替える。"""
@@ -1477,7 +1620,7 @@ class SyncApp:
 
     def _build_stick_check_tab(self):
         tab = ttk.Frame(self.nb, padding=8)
-        self.nb.add(tab, text='  Step 3: Stick Check  ')
+        self.nb.add(tab, text='  Step 6: Stick Check  ')
 
         ttk.Label(tab,
             text='▲ 上パネルに映像 + スティックフィギュアをフレーム同期表示します（スライダーで操作）',
@@ -1538,6 +1681,424 @@ class SyncApp:
                       width=4, anchor='w').grid(
                 row=row_idx, column=col + 2, padx=(2, 12), pady=3, sticky='w')
 
+    # ── Wand Annotation タブ ─────────────────────────
+
+    def _build_wand_tab(self):
+        tab = ttk.Frame(self.nb, padding=8)
+        self.nb.add(tab, text='  Step 2: Wand Annotation  ')
+
+        # ── カメラ・ポーズ選択 ─────────────────────────
+        top = ttk.Frame(tab)
+        top.pack(fill='x', pady=(0, 4))
+
+        ttk.Label(top, text='Camera:').pack(side='left')
+        wand_cam_combo = ttk.Combobox(
+            top, textvariable=self.wand_cam_var,
+            values=[f'cam{i + 1}' for i in range(N_CAMS)],
+            width=6, state='readonly',
+        )
+        wand_cam_combo.pack(side='left', padx=(4, 8))
+        wand_cam_combo.bind('<<ComboboxSelected>>', self._wand_on_cam_change)
+
+        ttk.Label(top, text='Pose:').pack(side='left')
+        ttk.Button(top, text='◀', width=3, command=self._wand_prev_pose).pack(side='left', padx=2)
+        self._wand_pose_label = ttk.Label(top, text='pose1  (1/5)', width=16)
+        self._wand_pose_label.pack(side='left')
+        ttk.Button(top, text='▶ 次ポーズ', command=self._wand_next_pose).pack(side='left', padx=2)
+
+        ttk.Separator(top, orient='vertical').pack(side='left', fill='y', padx=8)
+        ttk.Button(top, text='📂 CSV 読込', command=self._wand_load_csv).pack(side='left', padx=2)
+        ttk.Button(top, text='💾 CSV 保存', command=self._wand_save_csv).pack(side='left', padx=2)
+        self._wand_save_status = tk.StringVar(value='')
+        ttk.Label(top, textvariable=self._wand_save_status,
+                  foreground='#0088cc').pack(side='left', padx=4)
+
+        # ── フレームナビゲーション ─────────────────────
+        nav = ttk.Frame(tab)
+        nav.pack(fill='x', pady=(0, 4))
+
+        ttk.Button(nav, text='◀◀', width=3,
+                   command=lambda: self._wand_seek(-100)).pack(side='left')
+        ttk.Button(nav, text='◀',  width=3,
+                   command=lambda: self._wand_seek(-10)).pack(side='left', padx=2)
+        ttk.Button(nav, text='◀',  width=3,
+                   command=lambda: self._wand_seek(-1)).pack(side='left', padx=2)
+        self._wand_frame_var = tk.IntVar(value=0)
+        self._wand_frame_entry = ttk.Entry(
+            nav, textvariable=self._wand_frame_var, width=8, justify='center')
+        self._wand_frame_entry.pack(side='left', padx=2)
+        self._wand_frame_entry.bind(
+            '<Return>', lambda e: self._wand_show_frame(self._wand_frame_var.get()))
+        self._wand_total_label = ttk.Label(nav, text='/ --', width=8)
+        self._wand_total_label.pack(side='left')
+        ttk.Button(nav, text='▶',  width=3,
+                   command=lambda: self._wand_seek(1)).pack(side='left', padx=2)
+        ttk.Button(nav, text='▶',  width=3,
+                   command=lambda: self._wand_seek(10)).pack(side='left', padx=2)
+        ttk.Button(nav, text='▶▶', width=3,
+                   command=lambda: self._wand_seek(100)).pack(side='left')
+
+        ttk.Separator(nav, orient='vertical').pack(side='left', fill='y', padx=8)
+        self._wand_click_btn = ttk.Button(
+            nav, text='Click Mode: OFF', command=self._wand_toggle_click)
+        self._wand_click_btn.pack(side='left', padx=4)
+        ttk.Button(nav, text='Reset', command=self._wand_reset).pack(side='left', padx=2)
+
+        ttk.Separator(nav, orient='vertical').pack(side='left', fill='y', padx=8)
+        self._wand_pts_label = ttk.Label(
+            nav, text='0.0m✗  0.5m✗  1.0m✗  1.5m✗', width=30)
+        self._wand_pts_label.pack(side='left')
+
+        # ── 進捗グリッド ───────────────────────────────
+        prog_lf = ttk.LabelFrame(tab, text='Annotation Progress', padding=4)
+        prog_lf.pack(fill='x', pady=(4, 0))
+        self._wand_prog_labels = {}
+        for i in range(N_CAMS):
+            cam = f'cam{i + 1}'
+            lbl = ttk.Label(prog_lf,
+                            text=f'{cam}: 0/{len(self.wand_pose_names)}', width=12)
+            lbl.grid(row=0, column=i, padx=6, pady=2)
+            self._wand_prog_labels[cam] = lbl
+
+        ttk.Label(
+            tab,
+            text='▲ 上パネルにワンド映像を表示します。Click Mode ON → 4点クリック → 自動で次ポーズへ',
+            foreground='gray',
+        ).pack(anchor='w', pady=(6, 0))
+
+    # ── Wand モード制御 ────────────────────────────────
+
+    def _wand_on_tab_enter(self):
+        if not self.synced:
+            return
+        if not self._wand_active:
+            self._enter_wand_mode()
+
+    def _enter_wand_mode(self):
+        self._wand_active    = True
+        self.single_view_active = True
+        self.panel_area.pack_configure(fill='both', expand=True)
+        self.nb.pack_configure(fill='x', expand=False)
+
+        for p in self.panels:
+            p.frame.grid_remove()
+        self._skel_lf.grid_remove()
+
+        self._wand_panel_lf.grid(
+            row=0, column=0, columnspan=COLS, padx=4, pady=4, sticky='nsew')
+        self.panel_area.grid_rowconfigure(0, weight=1)
+        for c in range(COLS):
+            self.panel_area.grid_columnconfigure(c, weight=1)
+
+        self.root.update_idletasks()
+        self._wand_load_camera(self.wand_cam_var.get())
+
+    def _exit_wand_mode(self):
+        if not self._wand_active:
+            return
+        self._wand_active       = False
+        self.single_view_active = False
+        self._wand_panel_lf.grid_remove()
+        if self._wand_cap is not None:
+            self._wand_cap.release()
+            self._wand_cap      = None
+            self._wand_cap_path = ''
+
+    # ── カメラ読み込み・フレーム表示 ──────────────────
+
+    def _wand_load_camera(self, cam_name: str):
+        cam_idx = int(cam_name.replace('cam', '')) - 1
+        panel   = self.panels[cam_idx]
+        if not panel.paths:
+            self._wand_show_placeholder(f'{cam_name}: 動画未読込')
+            return
+        path = panel.paths[0]
+        if self._wand_cap is not None and self._wand_cap_path == path:
+            self._wand_show_frame(self._wand_frame_idx)
+            return
+        if self._wand_cap is not None:
+            self._wand_cap.release()
+        self._wand_cap       = cv2.VideoCapture(path)
+        self._wand_cap_path  = path
+        self._wand_total_frames = int(self._wand_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self._wand_total_label.config(text=f'/ {self._wand_total_frames - 1}')
+        # sync offset 位置からスタート
+        start = max(0, min(self.sync_offsets[cam_idx], self._wand_total_frames - 1))
+        self._wand_show_frame(start)
+        self._wand_update_pose_label()
+        self._wand_update_progress()
+
+    def _wand_show_frame(self, frame_idx: int):
+        if self._wand_cap is None:
+            return
+        frame_idx = max(0, min(frame_idx, self._wand_total_frames - 1))
+        self._wand_frame_idx = frame_idx
+        self._wand_frame_var.set(frame_idx)
+
+        self._wand_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, img = self._wand_cap.read()
+        if not ret:
+            return
+
+        cam_name  = self.wand_cam_var.get()
+        pose_name = self.wand_pose_names[self.wand_pose_idx]
+        img_rgb   = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        h_img, w_img = img_rgb.shape[:2]
+
+        # 保存済み点（緑）を描画
+        for pt_i, label in enumerate(self.wand_point_labels):
+            key = (cam_name, pose_name, label)
+            if key in self.wand_annotations and pt_i >= len(self.wand_clicked_pts):
+                u, v = self.wand_annotations[key]['u'], self.wand_annotations[key]['v']
+                cv2.circle(img_rgb, (u, v), 8, (50, 210, 50), -1)
+                cv2.putText(img_rgb, label, (u + 10, v - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (50, 210, 50), 2)
+
+        # クリック中の点（赤橙）を描画
+        for pt_i, (u, v) in enumerate(self.wand_clicked_pts):
+            label = self.wand_point_labels[pt_i]
+            cv2.circle(img_rgb, (u, v), 8, (255, 90, 0), -1)
+            cv2.putText(img_rgb, label, (u + 10, v - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 90, 0), 2)
+
+        # ステータスオーバーレイ
+        if self.wand_click_mode:
+            n = len(self.wand_clicked_pts)
+            if n < 4:
+                txt   = f'[CLICK] Next: {self.wand_point_labels[n]}  ({n + 1}/4)'
+                color = (255, 165, 0)
+            else:
+                txt   = 'All 4 done!'
+                color = (50, 220, 50)
+        else:
+            txt   = 'Click Mode OFF  |  Press [Click Mode] to start'
+            color = (160, 160, 160)
+        cv2.putText(img_rgb, txt, (12, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 4)
+        cv2.putText(img_rgb, txt, (12, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+        info = f'{cam_name}  {pose_name}  frame:{frame_idx}'
+        cv2.putText(img_rgb, info, (12, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3)
+        cv2.putText(img_rgb, info, (12, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 0), 2)
+
+        # キャンバスにフィット
+        cw = self._wand_panel_canvas.winfo_width()  or 1280
+        ch = self._wand_panel_canvas.winfo_height() or 720
+        scale = min(cw / w_img, ch / h_img)
+        nw    = max(1, int(w_img * scale))
+        nh    = max(1, int(h_img * scale))
+        ox    = (cw - nw) // 2
+        oy    = (ch - nh) // 2
+
+        self._wand_img_scale  = scale
+        self._wand_img_offset = (ox, oy)
+        self._wand_img_size   = (w_img, h_img)
+
+        pil_img = Image.fromarray(cv2.resize(img_rgb, (nw, nh)))
+        self._wand_photo = ImageTk.PhotoImage(pil_img)
+        self._wand_panel_canvas.delete('all')
+        self._wand_panel_canvas.create_image(ox, oy, anchor='nw', image=self._wand_photo)
+
+        self._wand_update_pts_label()
+
+    def _wand_show_placeholder(self, text: str = 'No video'):
+        cw = self._wand_panel_canvas.winfo_width()  or 800
+        ch = self._wand_panel_canvas.winfo_height() or 450
+        self._wand_panel_canvas.delete('all')
+        self._wand_panel_canvas.create_text(
+            cw // 2, ch // 2, text=text,
+            fill='#555', font=('Arial', 14), justify='center')
+
+    # ── クリック・操作 ─────────────────────────────────
+
+    def _wand_on_canvas_click(self, event):
+        if not self.wand_click_mode or len(self.wand_clicked_pts) >= 4:
+            return
+        ox, oy    = self._wand_img_offset
+        scale     = self._wand_img_scale
+        w_img, h_img = self._wand_img_size
+        img_x = int((event.x - ox) / scale)
+        img_y = int((event.y - oy) / scale)
+        if not (0 <= img_x < w_img and 0 <= img_y < h_img):
+            return
+        self.wand_clicked_pts.append((img_x, img_y))
+        self._wand_show_frame(self._wand_frame_idx)
+        if len(self.wand_clicked_pts) == 4:
+            self._wand_confirm_pose()
+
+    def _wand_confirm_pose(self):
+        """現在の 4 点クリックをアノテーションに保存して次ポーズへ。"""
+        if len(self.wand_clicked_pts) != 4:
+            messagebox.showwarning('Warning', '4 点すべてクリックしてください。')
+            return
+        cam_name  = self.wand_cam_var.get()
+        pose_name = self.wand_pose_names[self.wand_pose_idx]
+        for i, label in enumerate(self.wand_point_labels):
+            u, v = self.wand_clicked_pts[i]
+            self.wand_annotations[(cam_name, pose_name, label)] = {
+                'frame': self._wand_frame_idx,
+                'u': u,
+                'v': v,
+            }
+        self.wand_click_mode = False
+        self._wand_click_btn.config(text='Click Mode: OFF')
+        self.wand_clicked_pts = []
+        self._wand_update_progress()
+        if self.wand_pose_idx < len(self.wand_pose_names) - 1:
+            self.wand_pose_idx += 1
+            self._wand_update_pose_label()
+        else:
+            messagebox.showinfo('完了', f'{cam_name} の全ポーズ（{len(self.wand_pose_names)}）完了！')
+        self._wand_show_frame(self._wand_frame_idx)
+
+    def _wand_seek(self, delta: int):
+        self._wand_show_frame(self._wand_frame_idx + delta)
+
+    def _wand_toggle_click(self):
+        self.wand_click_mode = not self.wand_click_mode
+        if self.wand_click_mode:
+            self.wand_clicked_pts = []
+            self._wand_click_btn.config(text='Click Mode: ON')
+        else:
+            self._wand_click_btn.config(text='Click Mode: OFF')
+        self._wand_show_frame(self._wand_frame_idx)
+
+    def _wand_reset(self):
+        """現在の (cam, pose) のクリック & アノテーションをリセット。"""
+        self.wand_clicked_pts = []
+        self.wand_click_mode  = False
+        self._wand_click_btn.config(text='Click Mode: OFF')
+        cam  = self.wand_cam_var.get()
+        pose = self.wand_pose_names[self.wand_pose_idx]
+        for label in self.wand_point_labels:
+            self.wand_annotations.pop((cam, pose, label), None)
+        self._wand_update_progress()
+        self._wand_show_frame(self._wand_frame_idx)
+
+    def _wand_next_pose(self):
+        if len(self.wand_clicked_pts) == 4:
+            self._wand_confirm_pose()
+            return
+        if self.wand_pose_idx < len(self.wand_pose_names) - 1:
+            self.wand_pose_idx   += 1
+            self.wand_clicked_pts = []
+            self.wand_click_mode  = False
+            self._wand_click_btn.config(text='Click Mode: OFF')
+            self._wand_update_pose_label()
+            self._wand_show_frame(self._wand_frame_idx)
+
+    def _wand_prev_pose(self):
+        if self.wand_pose_idx > 0:
+            self.wand_pose_idx   -= 1
+            self.wand_clicked_pts = []
+            self.wand_click_mode  = False
+            self._wand_click_btn.config(text='Click Mode: OFF')
+            self._wand_update_pose_label()
+            self._wand_show_frame(self._wand_frame_idx)
+
+    def _wand_on_cam_change(self, _=None):
+        self.wand_pose_idx   = 0
+        self.wand_clicked_pts = []
+        self.wand_click_mode  = False
+        self._wand_click_btn.config(text='Click Mode: OFF')
+        self._wand_update_pose_label()
+        if self._wand_active:
+            self._wand_load_camera(self.wand_cam_var.get())
+
+    # ── ラベル更新 ─────────────────────────────────────
+
+    def _wand_update_pose_label(self):
+        pose  = self.wand_pose_names[self.wand_pose_idx]
+        total = len(self.wand_pose_names)
+        self._wand_pose_label.config(
+            text=f'{pose}  ({self.wand_pose_idx + 1}/{total})')
+
+    def _wand_update_pts_label(self):
+        cam  = self.wand_cam_var.get()
+        pose = self.wand_pose_names[self.wand_pose_idx]
+        parts = []
+        for i, label in enumerate(self.wand_point_labels):
+            if i < len(self.wand_clicked_pts):
+                parts.append(f'{label}●')
+            elif (cam, pose, label) in self.wand_annotations:
+                parts.append(f'{label}✓')
+            else:
+                parts.append(f'{label}✗')
+        self._wand_pts_label.config(text='  '.join(parts))
+
+    def _wand_update_progress(self):
+        for i in range(N_CAMS):
+            cam  = f'cam{i + 1}'
+            done = sum(
+                1 for p in self.wand_pose_names
+                if all((cam, p, lbl) in self.wand_annotations
+                       for lbl in self.wand_point_labels)
+            )
+            total = len(self.wand_pose_names)
+            lbl   = self._wand_prog_labels.get(cam)
+            if lbl:
+                lbl.config(
+                    text=f'{cam}: {done}/{total}',
+                    foreground=(
+                        '#00aa00' if done == total
+                        else 'gray' if done == 0 else 'black'
+                    ),
+                )
+
+    # ── CSV 保存 / 読込 ────────────────────────────────
+
+    def _wand_save_csv(self):
+        if not self.wand_annotations:
+            messagebox.showerror('Error', 'アノテーションがありません。')
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension='.csv',
+            filetypes=[('CSV', '*.csv')],
+            initialfile='wand_annotations.csv',
+        )
+        if not path:
+            return
+        import pandas as pd
+        rows = []
+        for (cam, pose, label), ann in sorted(self.wand_annotations.items()):
+            rows.append({
+                'camera':      cam,
+                'pose':        pose,
+                'point_label': label,
+                'frame':       ann['frame'],
+                'u':           ann['u'],
+                'v':           ann['v'],
+            })
+        pd.DataFrame(rows).to_csv(path, index=False)
+        self.calib_wand_csv.set(path)   # キャリブタブに自動反映
+        self._wand_save_status.set(f'保存: {Path(path).name}')
+        self.root.after(3000, lambda: self._wand_save_status.set(''))
+
+    def _wand_load_csv(self):
+        path = filedialog.askopenfilename(
+            filetypes=[('CSV', '*.csv')],
+            initialfile='wand_annotations.csv',
+        )
+        if not path:
+            return
+        try:
+            import pandas as pd
+            df = pd.read_csv(path)
+            self.wand_annotations.clear()
+            for _, row in df.iterrows():
+                key = (str(row['camera']), str(row['pose']), str(row['point_label']))
+                self.wand_annotations[key] = {
+                    'frame': int(row['frame']),
+                    'u':     int(row['u']),
+                    'v':     int(row['v']),
+                }
+            self._wand_update_progress()
+            if self._wand_active:
+                self._wand_show_frame(self._wand_frame_idx)
+            self.calib_wand_csv.set(path)
+            self._wand_save_status.set(f'読込: {Path(path).name}')
+            self.root.after(3000, lambda: self._wand_save_status.set(''))
+        except Exception as ex:
+            messagebox.showerror('Error', f'CSV 読み込み失敗: {ex}')
+
     def _on_thresh_change(self, cam_name: str):
         """スライダーで閾値が変わったときにスティックを再描画する。"""
         if self.in_pose_preview_mode and self.pose_preview_cam_var.get() == cam_name:
@@ -1561,7 +2122,7 @@ class SyncApp:
 
     def _build_pose5_tab(self):
         tab = ttk.Frame(self.nb, padding=8)
-        self.nb.add(tab, text='  Step 6: 3D Recon  ')
+        self.nb.add(tab, text='  Step 7: 3D Recon  ')
 
         desc_lf = ttk.LabelFrame(tab, text='Pipeline', padding=6)
         desc_lf.pack(fill='x', pady=(0, 6))

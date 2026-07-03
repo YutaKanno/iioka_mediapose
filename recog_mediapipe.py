@@ -212,13 +212,14 @@ def pose_recog_from_config( config: dict, model_path: Path ):
 
     console = Console()
 
-    output_csv  = config.get( 'output_csv', 'output.csv' )
+    output_csv   = config.get( 'output_csv', 'output.csv' )
     synced_start = int( config.get( 'synced_start', 0 ) )
-    det_conf    = float( config.get( 'det_conf',    0.8 ) )
-    pres_conf   = float( config.get( 'pres_conf',   0.8 ) )
-    track_conf  = float( config.get( 'track_conf',  0.8 ) )
-    vis_thresh  = float( config.get( 'vis_thresh',  0.9 ) )
-    segments    = config.get( 'video_segments', [] )
+    det_conf     = float( config.get( 'det_conf',    0.8 ) )
+    pres_conf    = float( config.get( 'pres_conf',   0.8 ) )
+    track_conf   = float( config.get( 'track_conf',  0.8 ) )
+    vis_thresh   = float( config.get( 'vis_thresh',  0.9 ) )
+    segments     = config.get( 'video_segments', [] )
+    save_to      = config.get( 'save_to', 'pose3d' )   # 'pose3d' or 'calib'
 
     console.print(
         Panel(
@@ -268,6 +269,10 @@ def pose_recog_from_config( config: dict, model_path: Path ):
 
             console.print( f'[cyan]Segment {seg_i + 1}:[/cyan] {Path(video_path).name}  frames {seg_start}–{seg_end}' )
 
+            # セグメント単位で出力フレームインデックスを上書きできる（ランダムフレーム用）
+            seg_frame_index = seg.get( 'frame_index', None )
+            cur_output_idx  = seg_frame_index if seg_frame_index is not None else output_frame_idx
+
             # スキップ
             cap.set( cv2.CAP_PROP_POS_FRAMES, seg_start )
             local_idx = seg_start
@@ -300,7 +305,7 @@ def pose_recog_from_config( config: dict, model_path: Path ):
                     timestamp_ms = global_timestamp_ms + int( local_idx * 1000.0 / fps )
                     result = landmarker.detect_for_video( mp_image, timestamp_ms )
 
-                    row = { 'frame': output_frame_idx }
+                    row = { 'frame': cur_output_idx }
 
                     if result.pose_landmarks:
                         landmarks = result.pose_landmarks[ 0 ]
@@ -319,6 +324,7 @@ def pose_recog_from_config( config: dict, model_path: Path ):
                             row[ f'{name}_v' ] = np.nan
 
                     records.append( row )
+                    cur_output_idx  += 1
                     output_frame_idx += 1
                     local_idx += 1
                     progress.advance( task )
@@ -329,19 +335,32 @@ def pose_recog_from_config( config: dict, model_path: Path ):
 
     df = pd.DataFrame( records )
 
+    # キャリブレーション用: 人が未検出のフレーム（全 _v が NaN）を除去
+    if save_to == 'calib':
+        _v_cols = [ c for c in df.columns if c.endswith( '_v' ) ]
+        if _v_cols:
+            _detected_mask = df[ _v_cols ].notna().any( axis=1 )
+            _n_all = len( df )
+            df = df[ _detected_mask ].reset_index( drop=True )
+            console.print(
+                f'[dim]人検出フレーム: {len(df)} / {_n_all} '
+                f'(未検出 {_n_all - len(df)} フレームを除去)[/dim]'
+            )
+
     # CSV は出力せず sync_config.json に直接書き込む
+    # save_to='pose3d' → pose3d.landmarks、'calib' → calib.landmarks
     cam_name = config.get( 'cam_name' )
     if cam_name:
         try:
             from pathlib import Path as _Path2
             _cfg_p = _Path2( 'sync_config.json' )
             _cfg = _json.loads( _cfg_p.read_text( encoding='utf-8' ) ) if _cfg_p.exists() else {}
-            if 'pose3d' not in _cfg:
-                _cfg[ 'pose3d' ] = {}
-            if 'landmarks' not in _cfg[ 'pose3d' ]:
-                _cfg[ 'pose3d' ][ 'landmarks' ] = {}
+            if save_to not in _cfg:
+                _cfg[ save_to ] = {}
+            if 'landmarks' not in _cfg[ save_to ]:
+                _cfg[ save_to ][ 'landmarks' ] = {}
             # カラム名 + データ配列（列指向で保存）
-            _cfg[ 'pose3d' ][ 'landmarks' ][ cam_name ] = {
+            _cfg[ save_to ][ 'landmarks' ][ cam_name ] = {
                 'columns': df.columns.tolist(),
                 'data':    df.values.tolist(),
             }
@@ -349,7 +368,7 @@ def pose_recog_from_config( config: dict, model_path: Path ):
             console.print()
             console.print(
                 f'[bold green]✓[/bold green] Saved [cyan]{cam_name}[/cyan] landmarks '
-                f'([white]{len(df):,}[/white] frames) → [cyan]sync_config.json[/cyan]'
+                f'([white]{len(df):,}[/white] frames) → [cyan]sync_config.json[/cyan][dim][{save_to}][/dim]'
             )
         except Exception as e:
             console.print( f'[red]ERROR saving to sync_config.json: {e}[/red]' )

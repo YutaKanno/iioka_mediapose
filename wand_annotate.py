@@ -1,7 +1,7 @@
 """
 Step 1a: Wand calibration annotation tool
 
-Each camera video (cam1.mp4 ~ cam6.mp4) contains wand footage for 3 poses in sequence.
+Each camera video (cam1.mp4 ~ cam6.mp4) contains wand footage for 5 poses in sequence.
 For each pose, select one still frame and click 4 points on the wand
 (0.0m, 0.5m, 1.0m, 1.5m) with the mouse. Results are saved to CSV.
 
@@ -23,7 +23,7 @@ import pandas as pd
 # ------------------------------
 video_dir = '/Users/yutakanno/Library/CloudStorage/GoogleDrive-poohyuta604@gmail.com/My Drive/mediapipe_test'  # folder containing cam1.mp4 ~ cam6.mp4
 camera_names = ["cam3", "cam4", "cam5", "cam6", "cam1", "cam2"]
-pose_names = ["pose1", "pose2", "pose3"]
+pose_names = ["pose1", "pose2", "pose3", "pose4", "pose5"]
 point_labels = ["0.0m", "0.5m", "1.0m", "1.5m"]
 output_csv_path = "./wand_annotations.csv"
 

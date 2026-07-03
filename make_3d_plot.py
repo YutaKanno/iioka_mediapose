@@ -14,7 +14,7 @@ from rich.console import Console
 
 _DEFAULT_INPUT_CSV   = 'landmarks_3d_processed.csv'
 _DEFAULT_OUTPUT_HTML = 'stick_figure_3d.html'
-_DEFAULT_FRAME_STEP  = 10
+_DEFAULT_FRAME_STEP  = 1
 
 _parser = argparse.ArgumentParser( description = '3D スティックフィギュア Plotly HTML 生成' )
 _parser.add_argument( '--input',      default = _DEFAULT_INPUT_CSV,

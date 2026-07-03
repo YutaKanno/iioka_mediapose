@@ -332,7 +332,8 @@ def reprojection_error_per_camera( observations, f, rvecs, tvecs, X ):
 def triangulate_all_frames( mp_dataframes, landmark_names, f, rvecs, tvecs, max_frames = None ):
 
     records = []
-    all_frames = mp_dataframes[ 0 ][ 'frame' ].values
+    _tri_src   = next( ( df for df in mp_dataframes if len( df ) > 0 ), mp_dataframes[ 0 ] )
+    all_frames = _tri_src[ 'frame' ].values
 
     if max_frames is not None and len( all_frames ) > max_frames:
         all_frames = all_frames[ : max_frames ]
@@ -477,45 +478,54 @@ def main():
     _wand_csv_path      = _calib_cfg.get( 'wand_csv', 'wand_annotations.csv' )
     _start_frames_cfg   = _calib_cfg.get( 'start_frames_per_cam', {} )
     _max_calib_frames   = _calib_cfg.get( 'max_calib_frames', None )
-    _landmarks_store    = _pose3d_cfg.get( 'landmarks', {} )   # Step 2 で sync_config.json に保存されたランドマーク
+
+    # calib.landmarks を優先し、なければ pose3d.landmarks を使用
+    _calib_lm    = _calib_cfg.get( 'landmarks', {} )
+    _pose3d_lm   = _pose3d_cfg.get( 'landmarks', {} )
+    _landmarks_store = _calib_lm if _calib_lm else _pose3d_lm
 
     console.print( f'[dim]Wand CSV      : {_wand_csv_path}[/dim]' )
+    console.print( f'[dim]Landmark src  : {"calib.landmarks" if _calib_lm else "pose3d.landmarks"}[/dim]' )
     console.print( f'[dim]Start frames  : {_start_frames_cfg}[/dim]' )
     console.print( f'[dim]Max BA frames : {_max_calib_frames}[/dim]' )
     console.print()
-
-    wand_df = pd.read_csv( _wand_csv_path )
-
-    pose_names   = sorted( wand_df[ 'pose' ].unique() )
-    point_labels = [ '0.0m', '0.5m', '1.0m', '1.5m' ]
-    n_wand_pose  = len( pose_names )
 
     # (cam_idx, pt_idx, u, v, weight)
     observations = []
     point_index  = 0
 
-    for pose_i, pose in enumerate( pose_names ):
+    from pathlib import Path as _WandPath
+    _wand_csv = _WandPath( _wand_csv_path )
+    if _wand_csv.exists():
+        wand_df      = pd.read_csv( _wand_csv_path, encoding='utf-8' )
+        pose_names   = sorted( wand_df[ 'pose' ].unique() )
+        point_labels = [ '0.0m', '0.5m', '1.0m', '1.5m' ]
+        n_wand_pose  = len( pose_names )
 
-        for k, label in enumerate( point_labels ):
-
-            for ci in range( n_cam ):
-
-                cam = camera_names[ ci ]
-
-                row = wand_df[
-                    ( wand_df[ 'pose' ] == pose )
-                    & ( wand_df[ 'point_label' ] == label )
-                    & ( wand_df[ 'camera' ] == cam )
-                ]
-
-                u, v = row[ [ 'u', 'v' ] ].values[ 0 ]
-                observations.append( ( ci, point_index, u, v, 1.0 ) )
-
-            point_index += 1
+        for pose_i, pose in enumerate( pose_names ):
+            for k, label in enumerate( point_labels ):
+                for ci in range( n_cam ):
+                    cam = camera_names[ ci ]
+                    row = wand_df[
+                        ( wand_df[ 'pose' ] == pose )
+                        & ( wand_df[ 'point_label' ] == label )
+                        & ( wand_df[ 'camera' ] == cam )
+                    ]
+                    u, v = row[ [ 'u', 'v' ] ].values[ 0 ]
+                    observations.append( ( ci, point_index, u, v, 1.0 ) )
+                point_index += 1
+    else:
+        console.print(
+            f'[yellow]Wand CSV not found ({_wand_csv_path}) '
+            f'— MediaPipe のみでキャリブレーションを実行します[/yellow]'
+        )
+        console.print()
+        pose_names  = []
+        n_wand_pose = 0
 
     n_wand_point = point_index
 
-    # Step 2 で sync_config.json に保存されたランドマークを読み込む
+    # sync_config.json からランドマークを読み込む（ないカメラは空 DataFrame でスキップ）
     mp_dataframes = []
     for name in camera_names:
         lm_entry = _landmarks_store.get( name )
@@ -524,28 +534,53 @@ def main():
             mp_dataframes.append( df )
             console.print( f'[dim]{name}: loaded from sync_config.json ({len(df)} rows)[/dim]' )
         else:
-            raise FileNotFoundError(
-                f'{name} のランドマークが sync_config.json にありません。'
-                f'先に Step 2: Pose Recognition を実行してください。'
-            )
+            console.print( f'[yellow]{name}: ランドマークなし — スキップ（観測データなし）[/yellow]' )
+            mp_dataframes.append( pd.DataFrame( columns=['frame'] ) )
 
     # start_frames_per_cam フィルタ: キャリブレーション開始フレーム以降のみ使用
     for ci, name in enumerate( camera_names ):
         sf = _start_frames_cfg.get( name )
-        if sf is not None:
+        if sf is not None and len( mp_dataframes[ ci ] ) > 0:
             mp_dataframes[ ci ] = (
                 mp_dataframes[ ci ][ mp_dataframes[ ci ][ 'frame' ] >= sf ]
                 .reset_index( drop=True )
             )
             console.print( f'[dim]{name}: frames >= {sf}  ({len(mp_dataframes[ci])} rows)[/dim]' )
 
+    # landmark_names を最初の有効な DataFrame から取得
+    _lm_src = next(
+        ( df for df in mp_dataframes if len( df.columns ) > 1 ), mp_dataframes[ 0 ]
+    )
     landmark_names = [
-        col[ : -2 ] for col in mp_dataframes[ 0 ].columns if col.endswith( '_v' )
+        col[ : -2 ] for col in _lm_src.columns if col.endswith( '_v' )
     ]
 
-    # BA に使うフレームをランダムサンプリング（v_thresh 以上のランドマークが多いフレームを優先）
-    all_frames = mp_dataframes[ 0 ][ 'frame' ].values
+    # BA に使うフレームをランダムサンプリング（最初の有効 DataFrame を基準に）
+    _first_valid = next(
+        ( df for df in mp_dataframes if len( df ) > 0 ), mp_dataframes[ 0 ]
+    )
+    all_frames = _first_valid[ 'frame' ].values
     rng = np.random.default_rng( 42 )
+
+    # 人が検出されているフレームのみ使用（いずれかのカメラで v_thresh 以上のランドマークがある）
+    _detected_frame_set = set()
+    for _df in mp_dataframes:
+        if len( _df ) == 0:
+            continue
+        _v_cols = [ c for c in _df.columns if c.endswith( '_v' ) ]
+        if not _v_cols:
+            continue
+        _mask = ( _df[ _v_cols ] >= v_thresh ).any( axis=1 )
+        _detected_frame_set.update( _df.loc[ _mask, 'frame' ].tolist() )
+    if _detected_frame_set:
+        _n_before = len( all_frames )
+        all_frames = np.array( sorted( _detected_frame_set ) )
+        console.print(
+            f'[dim]人検出フレーム (v≥{v_thresh}): {len(all_frames)} / {_n_before}[/dim]'
+        )
+    else:
+        console.print( f'[red]有効な検出フレームがありません (v_thresh={v_thresh})。[/red]' )
+        return
 
     if _max_calib_frames is not None and len( all_frames ) > _max_calib_frames:
         frame_list = rng.choice( all_frames, size=_max_calib_frames, replace=False )
@@ -785,18 +820,17 @@ def main():
     console.print( cam_table )
     console.print()
 
-    wand_table = Table( title = 'Wand Poses (Translation)', border_style = 'dim' )
-    wand_table.add_column( 'Pose', style = 'bold cyan' )
-    wand_table.add_column( 'tx', style = 'white', justify = 'right' )
-    wand_table.add_column( 'ty', style = 'white', justify = 'right' )
-    wand_table.add_column( 'tz', style = 'white', justify = 'right' )
-
-    for pi, pose in enumerate( pose_names ):
-        t = wand_tvecs[ pi ]
-        wand_table.add_row( pose, f'{t[0]:.3f}', f'{t[1]:.3f}', f'{t[2]:.3f}' )
-
-    console.print( wand_table )
-    console.print()
+    if n_wand_pose > 0:
+        wand_table = Table( title = 'Wand Poses (Translation)', border_style = 'dim' )
+        wand_table.add_column( 'Pose', style = 'bold cyan' )
+        wand_table.add_column( 'tx', style = 'white', justify = 'right' )
+        wand_table.add_column( 'ty', style = 'white', justify = 'right' )
+        wand_table.add_column( 'tz', style = 'white', justify = 'right' )
+        for pi, pose in enumerate( pose_names ):
+            t = wand_tvecs[ pi ]
+            wand_table.add_row( pose, f'{t[0]:.3f}', f'{t[1]:.3f}', f'{t[2]:.3f}' )
+        console.print( wand_table )
+        console.print()
 
     calib_path = 'camera_calibration.npz'
     np.savez(
@@ -825,7 +859,7 @@ def main():
     console.print()
 
     console.rule( '[bold yellow]Triangulation[/bold yellow]' )
-    total_frames = len( mp_dataframes[ 0 ] )
+    total_frames = len( next( ( df for df in mp_dataframes if len( df ) > 0 ), mp_dataframes[ 0 ] ) )
     limit_note = f'{max_tri_frames:,} / {total_frames:,}' if max_tri_frames and total_frames > max_tri_frames else f'{total_frames:,} (all)'
     console.print( f'Frames to triangulate: [cyan]{limit_note}[/cyan]' )
     console.print()
