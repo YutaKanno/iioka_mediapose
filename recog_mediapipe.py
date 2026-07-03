@@ -1,9 +1,19 @@
 import os
+import sys
 import argparse
 import cv2
 import mediapipe as mp
 import pandas    as pd
 import numpy     as np
+
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except AttributeError:
+        import io as _io
+        sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = _io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 from pathlib import Path
 
@@ -115,9 +125,9 @@ def pose_recog( folder_path, video_name, model_path ):
             TextColumn( '[bold blue]{task.description}' ),
             BarColumn( bar_width = 40 ),
             MofNCompleteColumn(),
-            TextColumn( '•' ),
+            TextColumn( '*' ),
             TimeElapsedColumn(),
-            TextColumn( '•' ),
+            TextColumn( '*' ),
             TimeRemainingColumn(),
             console = console,
             transient = False,
@@ -200,7 +210,7 @@ def pose_recog( folder_path, video_name, model_path ):
 
     console.print()
     console.print(
-        f'[bold green]✓[/bold green] Saved [cyan]{output_csv}[/cyan] '
+        f'[bold green]+[/bold green] Saved [cyan]{output_csv}[/cyan] '
         f'([white]{len( df ):,}[/white] rows × [white]{len( df.columns ):,}[/white] columns)'
     )
 
@@ -267,7 +277,7 @@ def pose_recog_from_config( config: dict, model_path: Path ):
                 seg_end = frame_num
             seg_end = min( seg_end, frame_num )
 
-            console.print( f'[cyan]Segment {seg_i + 1}:[/cyan] {Path(video_path).name}  frames {seg_start}–{seg_end}' )
+            console.print( f'[cyan]Segment {seg_i + 1}:[/cyan] {Path(video_path).name}  frames {seg_start}-{seg_end}' )
 
             # セグメント単位で出力フレームインデックスを上書きできる（ランダムフレーム用）
             seg_frame_index = seg.get( 'frame_index', None )
@@ -282,9 +292,9 @@ def pose_recog_from_config( config: dict, model_path: Path ):
                 TextColumn( '[bold blue]{task.description}' ),
                 BarColumn( bar_width = 40 ),
                 MofNCompleteColumn(),
-                TextColumn( '•' ),
+                TextColumn( '*' ),
                 TimeElapsedColumn(),
-                TextColumn( '•' ),
+                TextColumn( '*' ),
                 TimeRemainingColumn(),
                 console = console,
                 transient = False,
@@ -367,13 +377,13 @@ def pose_recog_from_config( config: dict, model_path: Path ):
             _cfg_p.write_text( _json.dumps( _cfg, indent=2, ensure_ascii=False ), encoding='utf-8' )
             console.print()
             console.print(
-                f'[bold green]✓[/bold green] Saved [cyan]{cam_name}[/cyan] landmarks '
-                f'([white]{len(df):,}[/white] frames) → [cyan]sync_config.json[/cyan][dim][{save_to}][/dim]'
+                f'[bold green]+[/bold green] Saved [cyan]{cam_name}[/cyan] landmarks '
+                f'([white]{len(df):,}[/white] frames) -> [cyan]sync_config.json[/cyan][dim][{save_to}][/dim]'
             )
         except Exception as e:
             console.print( f'[red]ERROR saving to sync_config.json: {e}[/red]' )
     else:
-        console.print( '[yellow]cam_name not set — landmarks not saved[/yellow]' )
+        console.print( '[yellow]cam_name not set - landmarks not saved[/yellow]' )
 
 
 def parse_video_names( argv ):
