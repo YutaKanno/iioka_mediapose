@@ -1,0 +1,17 @@
+{
+  "cam_name": "cam2",
+  "video_segments": [
+    {
+      "path": "/content/drive/MyDrive/mediapipe_test/mediapipe_test/cam2/97__0494.MP4",
+      "start": 103357,
+      "end": 103857
+    }
+  ],
+  "synced_start": 205732,
+  "save_to": "calib",
+  "det_conf": 0.6,
+  "pres_conf": 0.6,
+  "track_conf": 0.6,
+  "conf_th": 0.6,
+  "kp_th": 0.3
+}
