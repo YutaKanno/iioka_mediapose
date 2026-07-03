@@ -31,7 +31,7 @@ from rich.progress import (
 from rich.table import Table
 from rich.text import Text
 
-console = Console()
+console = Console(legacy_windows=False)
 
 np.random.seed( 42 )
 

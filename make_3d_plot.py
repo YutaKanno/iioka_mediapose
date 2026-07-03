@@ -58,7 +58,7 @@ CONNECTIONS = [
     ('RIGHT_KNEE',     'RIGHT_ANKLE'),
 ]
 
-console = Console()
+console = Console(legacy_windows=False)
 
 # ── データ読み込み ──────────────────────────────────────
 df3d = pd.read_csv(INPUT_CSV, encoding='utf-8')

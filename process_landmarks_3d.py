@@ -77,7 +77,7 @@ INPUT_CSV        = _args.input
 OUTPUT_CSV       = _args.output
 DROP_FIRST_FRAMES = _args.drop_first_frames
 
-console = Console()
+console = Console(legacy_windows=False)
 
 # ── 読み込み ───────────────────────────────────
 df = pd.read_csv(INPUT_CSV, encoding='utf-8')

@@ -43,7 +43,7 @@ def pose_recog( folder_path, video_name, model_path ):
 
     output_csv = f'{video_name}.csv'
 
-    console = Console()
+    console = Console(legacy_windows=False)
 
     console.print(
         Panel(
@@ -210,7 +210,7 @@ def pose_recog_from_config( config: dict, model_path: Path ):
 
     import json as _json
 
-    console = Console()
+    console = Console(legacy_windows=False)
 
     output_csv   = config.get( 'output_csv', 'output.csv' )
     synced_start = int( config.get( 'synced_start', 0 ) )
@@ -430,7 +430,7 @@ if __name__ == '__main__':
                          help = 'JSON config file for segment-based processing' )
     args, remaining = parser.parse_known_args()
 
-    console = Console()
+    console = Console(legacy_windows=False)
 
     if args.config:
         # config モード

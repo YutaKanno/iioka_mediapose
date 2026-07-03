@@ -2447,6 +2447,16 @@ class SyncApp:
             proc_csv = f'3d_{sf}_{ef}_processed.csv'
             html_out = f'3d_{sf}_{ef}.html'
 
+            # triangulate_only.py が読む JSON に正確なフレーム範囲を書き込む
+            try:
+                _cfg_p = Path(self._json_path)
+                _cfg   = _json.loads(_cfg_p.read_text(encoding='utf-8')) if _cfg_p.exists() else {}
+                _cfg.setdefault('pose3d', {})['start_frame'] = sf
+                _cfg['pose3d']['end_frame'] = ef
+                _cfg_p.write_text(_json.dumps(_cfg, indent=2, ensure_ascii=False), encoding='utf-8')
+            except Exception as _ex:
+                self._recon_log_queue.put(f'Warning: sync_config.json 更新失敗: {_ex}\n')
+
             use_smooth  = (self.recon_data_mode.get() == 'smooth')
             tmp_cfg_path = Path('_recon_smooth_config.json')
 
