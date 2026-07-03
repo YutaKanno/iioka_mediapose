@@ -17,6 +17,11 @@ sync_config.json
 reprojection_errors.json
 wand_annotations.csv
 
+# Colab用ファイルは除外から外す（git で管理）
+!sync_config.json
+!wand_annotations.csv
+!*_colab.json
+
 # 出力ファイル
 *.mp4
 *.html
