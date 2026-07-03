@@ -1,0 +1,22 @@
+{
+  "cam_name": "cam3",
+  "video_segments": [
+    {
+      "path": "/content/drive/MyDrive/mediapipe_test/mediapipe_test/cam3/56__0002.MP4",
+      "start": 107530,
+      "end": 107940
+    },
+    {
+      "path": "/content/drive/MyDrive/mediapipe_test/mediapipe_test/cam3/56__0003.MP4",
+      "start": 0,
+      "end": 590
+    }
+  ],
+  "synced_start": 204146,
+  "save_to": "pose3d",
+  "det_conf": 0.6,
+  "pres_conf": 0.6,
+  "track_conf": 0.6,
+  "conf_th": 0.6,
+  "kp_th": 0.3
+}

@@ -1,0 +1,17 @@
+{
+  "cam_name": "cam4",
+  "video_segments": [
+    {
+      "path": "/content/drive/MyDrive/mediapipe_test/mediapipe_test/cam4/94__0996.MP4",
+      "start": 4016,
+      "end": 5016
+    }
+  ],
+  "synced_start": 204146,
+  "save_to": "pose3d",
+  "det_conf": 0.6,
+  "pres_conf": 0.6,
+  "track_conf": 0.6,
+  "conf_th": 0.6,
+  "kp_th": 0.3
+}
