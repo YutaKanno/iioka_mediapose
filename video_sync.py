@@ -880,14 +880,19 @@ class SyncApp:
                     self._log_queue.put(f'  {cam_name}: 有効フレームなし、スキップ\n')
                     continue
 
+                _engine   = self.pose_engine.get()
+                _script   = f'recog_{_engine}.py'
+                _det_conf = self.pose_det_conf.get()
                 config = {
                     'cam_name':       cam_name,
                     'video_segments': segments,
                     'synced_start':   start_s,
-                    'det_conf':       self.pose_det_conf.get(),
-                    'pres_conf':      self.pose_det_conf.get(),
-                    'track_conf':     self.pose_det_conf.get(),
                     'save_to':        'calib',   # calib.landmarks に保存（人未検出フレームは除去）
+                    'det_conf':   _det_conf,
+                    'pres_conf':  _det_conf,
+                    'track_conf': _det_conf,
+                    'conf_th':    _det_conf,
+                    'kp_th':      0.3,
                 }
                 cfg_file = Path(f'_calib_{cam_name}_config.json')
                 cfg_file.write_text(
@@ -895,7 +900,7 @@ class SyncApp:
 
                 try:
                     proc = subprocess.Popen(
-                        [sys.executable, 'recog_mediapipe.py', '--config', str(cfg_file)],
+                        [sys.executable, _script, '--config', str(cfg_file)],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                         text=True, bufsize=1, encoding='utf-8', errors='replace',
                     )
