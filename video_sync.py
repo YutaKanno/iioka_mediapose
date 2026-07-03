@@ -541,6 +541,8 @@ class SyncApp:
         self.run_calib_btn = ttk.Button(
             run_row, text='▶  Run Calibration', command=self.run_calibration)
         self.run_calib_btn.pack(side='left', padx=(0, 8))
+        ttk.Button(run_row, text='Colab用コンフィグ出力',
+                   command=self._export_calib_colab_configs).pack(side='left', padx=(0, 16))
         self.calib_progress = tk.StringVar(value='')
         ttk.Label(run_row, textvariable=self.calib_progress,
                   foreground='#0088cc').pack(side='left')
@@ -1566,6 +1568,103 @@ class SyncApp:
             messagebox.showinfo('Colab コンフィグ出力完了', msg)
         else:
             messagebox.showwarning('Warning', '出力できるカメラがありません（範囲を確認してください）。')
+
+    def _export_calib_colab_configs(self):
+        """キャリブレーション用の Colab コンフィグ JSON を出力する。"""
+        import json as _json
+
+        if not self.synced:
+            messagebox.showerror('Error', '先に Step 1 で Sync を行ってください。')
+            return
+
+        out_dir = Path(filedialog.askdirectory(title='Colab キャリブコンフィグの保存先フォルダを選択'))
+        if not out_dir or not out_dir.exists():
+            return
+
+        engine   = self.pose_engine.get()
+        script   = f'recog_{engine}.py'
+        start_s  = self.calib_start_frame.get()
+        n_frames = self.calib_n_frames.get()
+        det_conf = self.pose_det_conf.get()
+
+        # actual_n: 最大利用可能フレーム数で丸める
+        max_avail = 0
+        enabled_panels = [
+            (i, self.panels[i]) for i in range(N_CAMS) if self.panels[i].caps
+        ]
+        for cam_i, panel in enabled_panels:
+            avail = panel.total_frames - 1 - self.sync_offsets[cam_i] - start_s
+            max_avail = max(max_avail, avail)
+        actual_n = min(n_frames, max_avail) if max_avail > 0 else n_frames
+
+        # ローカル Drive パスのプレフィックスを自動検出
+        all_paths = [p for panel in self.panels for p in panel.paths]
+        local_prefix = ''
+        for p in all_paths:
+            for part in ['My Drive', 'マイドライブ']:
+                idx = p.find(part)
+                if idx != -1:
+                    local_prefix = p[:idx + len(part)]
+                    break
+            if local_prefix:
+                break
+        colab_prefix = '/content/drive/MyDrive'
+
+        saved_files = []
+        for cam_i, panel in enabled_panels:
+            cam_name = f'cam{cam_i + 1}'
+            segments = []
+            frames_remaining = actual_n
+            for seg_i, path in enumerate(panel.paths):
+                if frames_remaining <= 0:
+                    break
+                seg_start_abs   = panel.cum_frames[seg_i]
+                cam_start_local = self.sync_offsets[cam_i] + start_s
+                cam_end_local   = self.sync_offsets[cam_i] + start_s + actual_n
+                local_start = max(0, cam_start_local - seg_start_abs)
+                local_end   = min(panel.segment_frames[seg_i],
+                                  cam_end_local - seg_start_abs)
+                if local_end <= local_start:
+                    continue
+                colab_path = (
+                    path.replace(local_prefix, colab_prefix, 1)
+                    if local_prefix and path.startswith(local_prefix)
+                    else path
+                )
+                segments.append({'path': colab_path, 'start': local_start, 'end': local_end})
+                frames_remaining -= (local_end - local_start)
+
+            if not segments:
+                continue
+
+            config = {
+                'cam_name':       cam_name,
+                'video_segments': segments,
+                'synced_start':   start_s,
+                'save_to':        'calib',
+                'det_conf':   det_conf,
+                'pres_conf':  det_conf,
+                'track_conf': det_conf,
+                'conf_th':    det_conf,
+                'kp_th':      0.3,
+            }
+            cfg_path = out_dir / f'{cam_name}_{engine}_calib_colab.json'
+            cfg_path.write_text(
+                _json.dumps(config, indent=2, ensure_ascii=False), encoding='utf-8'
+            )
+            saved_files.append(cfg_path.name)
+
+        if saved_files:
+            files_str = '\n'.join(f'  {f}' for f in saved_files)
+            msg = (
+                f'キャリブコンフィグを {len(saved_files)} 件出力しました:\n{files_str}\n\n'
+                f'Colab での実行コマンド例:\n'
+                f'  python {script} --config cam1_{engine}_calib_colab.json\n\n'
+                f'全カメラ完了後に Run Calibration（またはColab上で est_camera_poses.py）を実行してください。'
+            )
+            messagebox.showinfo('Colabキャリブコンフィグ出力完了', msg)
+        else:
+            messagebox.showwarning('Warning', '出力できるカメラがありません。')
 
     # ── ポーズプレビューモード ──────────────────────
 
