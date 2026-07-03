@@ -1283,16 +1283,14 @@ class SyncApp:
                    ).pack(side='left')
 
         # 2. エンジン選択 + Run ボタン行
-        engine_row = ttk.Frame(tab)
-        engine_row.pack(fill='x', pady=(0, 2))
-        ttk.Label(engine_row, text='Engine:').pack(side='left')
-        ttk.Radiobutton(engine_row, text='MediaPipe',
-                        variable=self.pose_engine, value='mediapipe').pack(side='left', padx=(4, 8))
-        ttk.Radiobutton(engine_row, text='YOLO Pose (GPU推奨)',
-                        variable=self.pose_engine, value='yolopose').pack(side='left')
-
         run_row = ttk.Frame(tab)
         run_row.pack(fill='x', pady=(0, 4))
+        ttk.Label(run_row, text='Engine:').pack(side='left')
+        ttk.Radiobutton(run_row, text='MediaPipe',
+                        variable=self.pose_engine, value='mediapipe').pack(side='left', padx=(4, 8))
+        ttk.Radiobutton(run_row, text='YOLO Pose (GPU推奨)',
+                        variable=self.pose_engine, value='yolopose').pack(side='left', padx=(0, 12))
+        ttk.Separator(run_row, orient='vertical').pack(side='left', fill='y', padx=(0, 8))
         self.run_mediapipe_btn = ttk.Button(
             run_row, text='▶ Run Pose', command=self.run_mediapipe)
         self.run_mediapipe_btn.pack(side='left', padx=(0, 8))
