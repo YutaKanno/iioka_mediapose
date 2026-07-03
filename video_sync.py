@@ -1915,6 +1915,10 @@ class SyncApp:
         self._wand_pose_label.pack(side='left')
         ttk.Button(top, text='▶ 次ポーズ', command=self._wand_next_pose).pack(side='left', padx=2)
 
+        ttk.Separator(top, orient='vertical').pack(side='left', fill='y', padx=6)
+        ttk.Button(top, text='▶ 次カメラ', command=self._wand_next_camera).pack(side='left', padx=2)
+        ttk.Button(top, text='◀ 前カメラ', command=self._wand_prev_camera).pack(side='left', padx=2)
+
         ttk.Separator(top, orient='vertical').pack(side='left', fill='y', padx=8)
         ttk.Button(top, text='📂 CSV 読込', command=self._wand_load_csv).pack(side='left', padx=2)
         ttk.Button(top, text='💾 CSV 保存', command=self._wand_save_csv).pack(side='left', padx=2)
@@ -2134,7 +2138,8 @@ class SyncApp:
             self._wand_confirm_pose()
 
     def _wand_confirm_pose(self):
-        """現在の 4 点クリックをアノテーションに保存して次ポーズへ。"""
+        """現在の 4 点クリックをアノテーションに保存して次カメラへ進む。
+        全カメラ完了後に次ポーズへ自動進行。"""
         if len(self.wand_clicked_pts) != 4:
             messagebox.showwarning('Warning', '4 点すべてクリックしてください。')
             return
@@ -2151,12 +2156,66 @@ class SyncApp:
         self._wand_click_btn.config(text='Click Mode: OFF')
         self.wand_clicked_pts = []
         self._wand_update_progress()
-        if self.wand_pose_idx < len(self.wand_pose_names) - 1:
-            self.wand_pose_idx += 1
-            self._wand_update_pose_label()
+
+        # 現在の同期フレームを保存（カメラ切替後に同フレームを表示するため）
+        cam_idx = int(cam_name.replace('cam', '')) - 1
+        synced_frame = max(0, self._wand_frame_idx - self.sync_offsets[cam_idx])
+
+        # 動画が読み込まれたカメラのリストを順番通りに取得
+        cam_order = [f'cam{i + 1}' for i in range(N_CAMS) if self.panels[i].caps]
+        cur_pos   = cam_order.index(cam_name) if cam_name in cam_order else 0
+
+        if cur_pos + 1 < len(cam_order):
+            # 同じポーズで次カメラへ（同期フレームを維持）
+            self._wand_switch_camera(cam_order[cur_pos + 1], synced_frame)
         else:
-            messagebox.showinfo('完了', f'{cam_name} の全ポーズ（{len(self.wand_pose_names)}）完了！')
-        self._wand_show_frame(self._wand_frame_idx)
+            # 全カメラ完了 → 次ポーズへ
+            if self.wand_pose_idx < len(self.wand_pose_names) - 1:
+                self.wand_pose_idx += 1
+                self._wand_update_pose_label()
+                # 先頭カメラに戻る（フレームはリセット）
+                if cam_order:
+                    self._wand_switch_camera(cam_order[0], synced_frame=None)
+            else:
+                messagebox.showinfo(
+                    '完了', f'全ポーズ（{len(self.wand_pose_names)}）× 全カメラのアノテーションが完了しました！')
+                self._wand_show_frame(self._wand_frame_idx)
+
+    def _wand_switch_camera(self, cam_name: str, synced_frame=None):
+        """カメラを切り替え、指定された同期フレームを表示する。"""
+        self.wand_cam_var.set(cam_name)
+        cam_idx = int(cam_name.replace('cam', '')) - 1
+        self._wand_update_pose_label()
+
+        # キャプチャを切り替え
+        panel = self.panels[cam_idx]
+        if not panel.paths:
+            self._wand_show_placeholder(f'{cam_name}: 動画未読込')
+            return
+        path = panel.paths[0]
+        if self._wand_cap is not None and self._wand_cap_path != path:
+            self._wand_cap.release()
+            self._wand_cap      = cv2.VideoCapture(path)
+            self._wand_cap_path = path
+            self._wand_total_frames = int(self._wand_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self._wand_total_label.config(text=f'/ {self._wand_total_frames - 1}')
+        elif self._wand_cap is None:
+            self._wand_cap      = cv2.VideoCapture(path)
+            self._wand_cap_path = path
+            self._wand_total_frames = int(self._wand_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self._wand_total_label.config(text=f'/ {self._wand_total_frames - 1}')
+
+        if synced_frame is not None:
+            # 同期フレームをこのカメラのローカルフレームに変換
+            target = max(0, min(
+                self.sync_offsets[cam_idx] + synced_frame,
+                self._wand_total_frames - 1,
+            ))
+        else:
+            target = max(0, min(self.sync_offsets[cam_idx], self._wand_total_frames - 1))
+
+        self._wand_show_frame(target)
+        self._wand_update_progress()
 
     def _wand_seek(self, delta: int):
         self._wand_show_frame(self._wand_frame_idx + delta)
@@ -2183,6 +2242,7 @@ class SyncApp:
         self._wand_show_frame(self._wand_frame_idx)
 
     def _wand_next_pose(self):
+        """手動で次ポーズに進む（クリック済みなら確定してから）。"""
         if len(self.wand_clicked_pts) == 4:
             self._wand_confirm_pose()
             return
@@ -2195,6 +2255,7 @@ class SyncApp:
             self._wand_show_frame(self._wand_frame_idx)
 
     def _wand_prev_pose(self):
+        """手動で前ポーズに戻る。"""
         if self.wand_pose_idx > 0:
             self.wand_pose_idx   -= 1
             self.wand_clicked_pts = []
@@ -2203,8 +2264,34 @@ class SyncApp:
             self._wand_update_pose_label()
             self._wand_show_frame(self._wand_frame_idx)
 
+    def _wand_next_camera(self):
+        """手動で次カメラへ（同期フレームを維持）。"""
+        cam_name  = self.wand_cam_var.get()
+        cam_idx   = int(cam_name.replace('cam', '')) - 1
+        synced    = max(0, self._wand_frame_idx - self.sync_offsets[cam_idx])
+        cam_order = [f'cam{i + 1}' for i in range(N_CAMS) if self.panels[i].caps]
+        cur_pos   = cam_order.index(cam_name) if cam_name in cam_order else 0
+        if cur_pos + 1 < len(cam_order):
+            self.wand_clicked_pts = []
+            self.wand_click_mode  = False
+            self._wand_click_btn.config(text='Click Mode: OFF')
+            self._wand_switch_camera(cam_order[cur_pos + 1], synced)
+
+    def _wand_prev_camera(self):
+        """手動で前カメラへ（同期フレームを維持）。"""
+        cam_name  = self.wand_cam_var.get()
+        cam_idx   = int(cam_name.replace('cam', '')) - 1
+        synced    = max(0, self._wand_frame_idx - self.sync_offsets[cam_idx])
+        cam_order = [f'cam{i + 1}' for i in range(N_CAMS) if self.panels[i].caps]
+        cur_pos   = cam_order.index(cam_name) if cam_name in cam_order else 0
+        if cur_pos > 0:
+            self.wand_clicked_pts = []
+            self.wand_click_mode  = False
+            self._wand_click_btn.config(text='Click Mode: OFF')
+            self._wand_switch_camera(cam_order[cur_pos - 1], synced)
+
     def _wand_on_cam_change(self, _=None):
-        self.wand_pose_idx   = 0
+        """カメラドロップダウンで手動変更（ポーズはリセットしない）。"""
         self.wand_clicked_pts = []
         self.wand_click_mode  = False
         self._wand_click_btn.config(text='Click Mode: OFF')
