@@ -322,6 +322,11 @@ class SyncApp:
         self._pose_running    = False
         self._pose_log_queue: queue.Queue | None = None
         self._recon_log_queue: queue.Queue | None = None
+        # 認識エンジン選択 ('mediapipe' or 'yolopose')
+        self.pose_engine        = tk.StringVar(value='mediapipe')
+        # Colab コンフィグ出力用パス置換
+        self.colab_local_prefix = tk.StringVar(value='')   # ローカルのGoogleDriveルート
+        self.colab_drive_prefix = tk.StringVar(value='/content/drive/MyDrive')  # Colab側のパス
         self._pose_csv_data: dict = {}   # {cam_name: pd.DataFrame}
         self._pose_skel_photo = None
         self._pose_skel_smooth_photo = None
@@ -1197,12 +1202,22 @@ class SyncApp:
                    command=lambda: self.pose_end_frame.set(self.sync_pos)
                    ).pack(side='left')
 
-        # 2. Run ボタン行
+        # 2. エンジン選択 + Run ボタン行
+        engine_row = ttk.Frame(tab)
+        engine_row.pack(fill='x', pady=(0, 2))
+        ttk.Label(engine_row, text='Engine:').pack(side='left')
+        ttk.Radiobutton(engine_row, text='MediaPipe',
+                        variable=self.pose_engine, value='mediapipe').pack(side='left', padx=(4, 8))
+        ttk.Radiobutton(engine_row, text='YOLO Pose (GPU推奨)',
+                        variable=self.pose_engine, value='yolopose').pack(side='left')
+
         run_row = ttk.Frame(tab)
         run_row.pack(fill='x', pady=(0, 4))
         self.run_mediapipe_btn = ttk.Button(
-            run_row, text='▶ Run MediaPipe', command=self.run_mediapipe)
+            run_row, text='▶ Run Pose', command=self.run_mediapipe)
         self.run_mediapipe_btn.pack(side='left', padx=(0, 8))
+        ttk.Button(run_row, text='Colab用コンフィグ出力',
+                   command=self._export_colab_configs).pack(side='left', padx=(0, 16))
         self.pose_progress_var = tk.StringVar(value='')
         ttk.Label(run_row, textvariable=self.pose_progress_var,
                   foreground='#0088cc').pack(side='left')
@@ -1326,18 +1341,24 @@ class SyncApp:
                     self._pose_log_queue.put(f'  {cam_name}: 範囲内のセグメントなし、スキップ\n')
                     continue
 
+                engine   = self.pose_engine.get()
+                script   = f'recog_{engine}.py'
+                det_conf = self.pose_det_conf.get()
                 config = {
                     'cam_name':       cam_name,
                     'video_segments': segments,
                     'synced_start':   start_s,
-                    'det_conf':       self.pose_det_conf.get(),
-                    'pres_conf':      self.pose_det_conf.get(),
-                    'track_conf':     self.pose_det_conf.get(),
-                    # vis_thresh なし: 全ランドマークを保存
+                    # MediaPipe 用パラメータ
+                    'det_conf':   det_conf,
+                    'pres_conf':  det_conf,
+                    'track_conf': det_conf,
+                    # YOLO Pose 用パラメータ
+                    'conf_th': det_conf,
+                    'kp_th':   0.3,
                     # 結果は sync_config.json の pose3d.landmarks に保存（CSV不要）
                 }
 
-                cfg_file = Path(f'_{cam_name}_mediapipe_config.json')
+                cfg_file = Path(f'_{cam_name}_{engine}_config.json')
                 import json as _json
                 cfg_file.write_text(
                     _json.dumps(config, indent=2, ensure_ascii=False),
@@ -1346,7 +1367,7 @@ class SyncApp:
 
                 try:
                     proc = subprocess.Popen(
-                        [sys.executable, 'recog_mediapipe.py', '--config', str(cfg_file)],
+                        [sys.executable, script, '--config', str(cfg_file)],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                         text=True, bufsize=1, encoding='utf-8', errors='replace',
                     )
@@ -1399,13 +1420,18 @@ class SyncApp:
             messagebox.showerror('Error', f'{cam_name}: 範囲内のセグメントがありません。')
             return
 
+        engine   = self.pose_engine.get()
+        script   = f'recog_{engine}.py'
+        det_conf = self.pose_det_conf.get()
         config = {
             'cam_name':       cam_name,
             'video_segments': segments,
             'synced_start':   start_s,
-            'det_conf':       self.pose_det_conf.get(),
-            'pres_conf':      self.pose_det_conf.get(),
-            'track_conf':     self.pose_det_conf.get(),
+            'det_conf':   det_conf,
+            'pres_conf':  det_conf,
+            'track_conf': det_conf,
+            'conf_th': det_conf,
+            'kp_th':   0.3,
         }
 
         cfg_file = Path(f'_{cam_name}_rerun_config.json')
@@ -1420,7 +1446,7 @@ class SyncApp:
         def _worker():
             try:
                 proc = subprocess.Popen(
-                    [sys.executable, 'recog_mediapipe.py', '--config', str(cfg_file)],
+                    [sys.executable, script, '--config', str(cfg_file)],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, bufsize=1, encoding='utf-8', errors='replace',
                 )
@@ -1436,6 +1462,105 @@ class SyncApp:
 
         threading.Thread(target=_worker, daemon=True).start()
         self.root.after(100, self._poll_pose_log)
+
+    # ── Colab コンフィグ出力 ──────────────────────────
+
+    def _export_colab_configs(self):
+        """Google Colab で recog_yolopose.py を実行するためのコンフィグ JSON を出力する。
+        ローカルのビデオパスを Colab 上の Drive パスに置換して保存する。"""
+        import json as _json
+
+        if not self.synced:
+            messagebox.showerror('Error', '先に Step 1 で Sync を行ってください。')
+            return
+
+        out_dir = Path(filedialog.askdirectory(title='Colab コンフィグの保存先フォルダを選択'))
+        if not out_dir or not out_dir.exists():
+            return
+
+        engine   = self.pose_engine.get()
+        script   = f'recog_{engine}.py'
+        start_s  = self.pose_start_frame.get()
+        end_s    = self.pose_end_frame.get()
+        det_conf = self.pose_det_conf.get()
+
+        # ローカル Drive パスのプレフィックスを自動検出（Google Drive 同期フォルダ）
+        all_paths = [p for panel in self.panels for p in panel.paths]
+        local_prefix = ''
+        for p in all_paths:
+            # macOS: ~/Library/CloudStorage/GoogleDrive-.../My Drive/
+            # Windows: G:\My Drive\
+            for part in ['My Drive', 'マイドライブ']:
+                idx = p.find(part)
+                if idx != -1:
+                    local_prefix = p[:idx + len(part)]
+                    break
+            if local_prefix:
+                break
+
+        colab_prefix = '/content/drive/MyDrive'
+
+        saved_files = []
+        for cam_i, panel in enumerate(self.panels):
+            if not panel.caps:
+                continue
+            cam_name = f'cam{cam_i + 1}'
+
+            segments = []
+            for seg_i, path in enumerate(panel.paths):
+                seg_start_abs = panel.cum_frames[seg_i]
+                seg_end_abs   = panel.cum_frames[seg_i + 1]
+                cam_start = self.sync_offsets[cam_i] + start_s
+                cam_end   = self.sync_offsets[cam_i] + end_s
+                local_start = max(0, cam_start - seg_start_abs)
+                local_end   = min(panel.segment_frames[seg_i], cam_end - seg_start_abs)
+                if local_end <= local_start:
+                    continue
+
+                # ローカルパスを Colab パスに変換
+                colab_path = (
+                    path.replace(local_prefix, colab_prefix, 1)
+                    if local_prefix and path.startswith(local_prefix)
+                    else path
+                )
+                segments.append({
+                    'path':  colab_path,
+                    'start': local_start,
+                    'end':   local_end,
+                })
+
+            if not segments:
+                continue
+
+            config = {
+                'cam_name':       cam_name,
+                'video_segments': segments,
+                'synced_start':   start_s,
+                'save_to':        'pose3d',
+                'det_conf':   det_conf,
+                'pres_conf':  det_conf,
+                'track_conf': det_conf,
+                'conf_th':    det_conf,
+                'kp_th':      0.3,
+            }
+
+            cfg_path = out_dir / f'{cam_name}_{engine}_colab.json'
+            cfg_path.write_text(
+                _json.dumps(config, indent=2, ensure_ascii=False), encoding='utf-8'
+            )
+            saved_files.append(cfg_path.name)
+
+        if saved_files:
+            files_str = '\n'.join(f'  {f}' for f in saved_files)
+            msg = (
+                f'コンフィグを {len(saved_files)} 件出力しました:\n{files_str}\n\n'
+                f'ローカル Drive プレフィックス:\n  {local_prefix or "(検出できず)"}\n\n'
+                f'Colab での実行コマンド例:\n'
+                f'  python {script} --config cam1_{engine}_colab.json'
+            )
+            messagebox.showinfo('Colab コンフィグ出力完了', msg)
+        else:
+            messagebox.showwarning('Warning', '出力できるカメラがありません（範囲を確認してください）。')
 
     # ── ポーズプレビューモード ──────────────────────
 
