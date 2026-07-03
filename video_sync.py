@@ -1484,29 +1484,31 @@ class SyncApp:
         for c in range(3):
             self.panel_area.grid_columnconfigure(c, weight=1, minsize=PANEL_W)
 
-        # Configure バインドで動的リサイズ（遅延してレイアウト確定後に実行）
-        self.panel_area.bind('<Configure>', self._on_panel_area_configure)
+        # 高さはここで1回だけ確定させる（Configure ループによる膨張を防ぐ）
         self.root.update_idletasks()
+        self._preview_canvas_height = max(PANEL_H, self.panel_area.winfo_height() - 92)
+
+        # 幅方向は Configure バインドで追従（高さは固定値を使う）
+        self.panel_area.bind('<Configure>', self._on_panel_area_configure)
         self.root.after(30, lambda: self._resize_pose_preview(cam_idx))
         self._update_skel_canvas(self.sync_pos)
         self._update_smooth_skel_canvas(self.sync_pos)
 
     def _on_panel_area_configure(self, event=None):
-        """panel_area リサイズ時に3つのキャンバスを等幅に調整する（デバウンス付き）。"""
+        """panel_area 幅変化時にキャンバス幅を等分配分する（高さは変更しない）。"""
         if not self.in_pose_preview_mode:
             return
-        # 連続発火を防ぐため50ms後に1回だけ実行
-        if hasattr(self, '_resize_after_id') and self._resize_after_id:
+        if self._resize_after_id:
             self.root.after_cancel(self._resize_after_id)
         cam_idx = self._get_cam_idx()
         self._resize_after_id = self.root.after(
-            50, lambda: self._resize_pose_preview(cam_idx))
+            80, lambda: self._resize_pose_preview(cam_idx))
 
     def _exit_pose_preview_mode(self, restore_view: bool = True):
         """ポーズプレビューモードを解除する。"""
         self.in_pose_preview_mode = False
         self.panel_area.unbind('<Configure>')
-        if hasattr(self, '_resize_after_id') and self._resize_after_id:
+        if self._resize_after_id:
             self.root.after_cancel(self._resize_after_id)
             self._resize_after_id = None
         self._skel_lf.grid_remove()
@@ -1515,14 +1517,14 @@ class SyncApp:
             self._enter_single_view(self._get_cam_idx())
 
     def _resize_pose_preview(self, cam_idx: int):
-        """ポーズプレビューモード時の3キャンバスを等幅に調整する。"""
+        """ポーズプレビューモード時の3キャンバスを等幅に調整する（高さは固定）。"""
         self._resize_after_id = None
         total_w = self.panel_area.winfo_width()
         if total_w <= 1:
             return  # まだレイアウト未確定
         third_w = max(PANEL_W, (total_w - 32) // 3)
-        # -92: VideoPanel 内のラベル・ナビボタン等の高さ分を引く（_enter_single_view と同値）
-        ah = max(PANEL_H, self.panel_area.winfo_height() - 92)
+        # 高さは入室時に1回だけ確定した値を使用（Configure ループ対策）
+        ah = self._preview_canvas_height
         p = self.panels[cam_idx]
         p.canvas.config(width=third_w, height=ah)
         self._skel_canvas.config(width=third_w, height=ah)
