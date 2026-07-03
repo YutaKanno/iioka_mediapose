@@ -539,8 +539,11 @@ class SyncApp:
         run_row = ttk.Frame(tab)
         run_row.pack(fill='x', pady=(0, 6))
         self.run_calib_btn = ttk.Button(
-            run_row, text='▶  Run Calibration', command=self.run_calibration)
+            run_row, text='▶ ポーズ推定 + カメラ配置推定', command=self.run_calibration)
         self.run_calib_btn.pack(side='left', padx=(0, 8))
+        self.run_ba_btn = ttk.Button(
+            run_row, text='▶ カメラ配置推定のみ', command=self.run_bundle_adjustment)
+        self.run_ba_btn.pack(side='left', padx=(0, 8))
         ttk.Button(run_row, text='Colab用コンフィグ出力',
                    command=self._export_calib_colab_configs).pack(side='left', padx=(0, 16))
         self.calib_progress = tk.StringVar(value='')
@@ -959,16 +962,86 @@ class SyncApp:
             pass
         self.root.after(100, self._poll_log)
 
+    def run_bundle_adjustment(self):
+        """ポーズ推定済みの calib.landmarks を使い、カメラ配置推定（Bundle Adjustment）だけを実行する。
+        Colab でポーズ推定を行った後にローカルで実行するためのボタン。"""
+        if self._calib_running:
+            messagebox.showinfo('Info', 'キャリブレーション実行中です。')
+            return
+
+        # sync_config.json を最新状態で保存（wand_csv パス等を更新）
+        try:
+            with open(self._json_path, 'r', encoding='utf-8') as fh:
+                existing_cfg = json.load(fh)
+        except (FileNotFoundError, json.JSONDecodeError):
+            existing_cfg = {}
+        cfg = self._build_json()
+        if 'cameras' in existing_cfg and 'cameras' in cfg:
+            for old_c, new_c in zip(existing_cfg['cameras'], cfg['cameras']):
+                if not new_c.get('paths') and old_c.get('paths'):
+                    new_c['paths'] = old_c['paths']
+                    new_c.setdefault('total_frames', old_c.get('total_frames', 0))
+        old_calib = existing_cfg.get('calib', {})
+        cfg['calib'] = {**old_calib, **cfg.get('calib', {})}
+        existing_cfg.update(cfg)
+        with open(self._json_path, 'w', encoding='utf-8') as fh:
+            json.dump(existing_cfg, fh, indent=2, ensure_ascii=False)
+
+        # calib.landmarks が存在するか確認
+        has_landmarks = bool(
+            existing_cfg.get('calib', {}).get('landmarks')
+        )
+        if not has_landmarks:
+            if not messagebox.askyesno(
+                '確認',
+                'sync_config.json に calib.landmarks が見つかりません。\n'
+                'Colab でポーズ推定を先に実行しましたか？\n\n続けて実行しますか？'
+            ):
+                return
+
+        # ログクリア
+        self.calib_log.config(state='normal')
+        self.calib_log.delete('1.0', 'end')
+        self.calib_log.config(state='disabled')
+
+        self._calib_running = True
+        self.run_calib_btn.config(state='disabled')
+        self.run_ba_btn.config(state='disabled')
+        self.calib_progress.set('カメラ配置推定中…')
+        self.status_var.set('Calibration: bundle adjustment…')
+
+        self._log_queue = queue.Queue()
+
+        def _worker():
+            self._log_queue.put('--- カメラ配置推定 (Bundle Adjustment) ---\n')
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, 'est_camera_poses.py'],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1, encoding='utf-8', errors='replace',
+                )
+                for line in proc.stdout:
+                    self._log_queue.put(strip_ansi(line))
+                proc.wait()
+                self._log_queue.put(('__done__', proc.returncode))
+            except Exception as ex:
+                self._log_queue.put(f'ERROR: {ex}\n')
+                self._log_queue.put(('__done__', -1))
+
+        threading.Thread(target=_worker, daemon=True).start()
+        self.root.after(100, self._poll_log)
+
     def _on_calibration_complete(self, returncode: int):
         self._calib_running = False
         self.run_calib_btn.config(state='normal')
+        self.run_ba_btn.config(state='normal')
         if returncode == 0:
-            self.calib_progress.set('✓ 完了')
+            self.calib_progress.set('完了')
             self.status_var.set('Calibration complete.')
             self._load_results()
             self.nb.select(3)   # → Step 4: Results
         else:
-            self.calib_progress.set(f'✗ 終了コード {returncode}')
+            self.calib_progress.set(f'失敗 (code={returncode})')
             self.status_var.set(f'Calibration failed (code={returncode})')
 
     # ── Step 4: Results ──────────────────────────
