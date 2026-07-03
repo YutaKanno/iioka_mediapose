@@ -486,6 +486,12 @@ def main():
     _pose3d_cfg         = _cfg_all.get( 'pose3d', {} )
 
     _wand_csv_path      = _calib_cfg.get( 'wand_csv', 'wand_annotations.csv' )
+    # 絶対パスが存在しない場合（Colab 等の別環境）→ ファイル名のみで再検索
+    if _wand_csv_path and not Path( _wand_csv_path ).exists():
+        _fallback = Path( _wand_csv_path ).name
+        if Path( _fallback ).exists():
+            console.print( f'[dim]Wand CSV path not found, using: {_fallback}[/dim]' )
+            _wand_csv_path = _fallback
     _start_frames_cfg   = _calib_cfg.get( 'start_frames_per_cam', {} )
     _max_calib_frames   = _calib_cfg.get( 'max_calib_frames', None )
 

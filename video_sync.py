@@ -2246,6 +2246,8 @@ class SyncApp:
             self.panel_area.grid_columnconfigure(c, weight=1)
 
         self.root.update_idletasks()
+        # メイン画面の sync_pos を引き継いで開始
+        self._wand_synced_idx = self.sync_pos
         self._wand_load_camera(self.wand_cam_var.get())
 
     def _exit_wand_mode(self):
@@ -2275,8 +2277,8 @@ class SyncApp:
         # 利用可能な synced フレーム数を表示（全セグメント合計 − sync offset）
         max_synced = max(0, panel.total_frames - self.sync_offsets[cam_idx])
         self._wand_total_var.set(f'/ {max_synced - 1}')
-        # synced=0（sync点）からスタート
-        self._wand_show_frame(0)
+        # 現在の _wand_synced_idx を維持（_enter_wand_mode で sync_pos を引き継いだ値）
+        self._wand_show_frame(self._wand_synced_idx)
         self._wand_update_pose_label()
         self._wand_update_progress()
         # カメラロード後はクリックモードを自動ON
