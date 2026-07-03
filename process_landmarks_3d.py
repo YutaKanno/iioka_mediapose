@@ -9,10 +9,20 @@ Usage:
     python process_landmarks_3d.py [--input FILE] [--output FILE] [--drop-first-frames N]
 """
 
+import sys
 import argparse
 import numpy as np
 import pandas as pd
 from scipy.interpolate import PchipInterpolator
+
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except AttributeError:
+        import io as _io
+        sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = _io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 from scipy.signal import savgol_filter
 from rich.console import Console
 from rich.progress import (
@@ -70,7 +80,7 @@ DROP_FIRST_FRAMES = _args.drop_first_frames
 console = Console()
 
 # ── 読み込み ───────────────────────────────────
-df = pd.read_csv(INPUT_CSV)
+df = pd.read_csv(INPUT_CSV, encoding='utf-8')
 console.print(f'[cyan]Loaded {INPUT_CSV}:[/cyan] {len(df):,} rows')
 
 # 先頭 N フレームを除外
@@ -192,7 +202,7 @@ with Progress(
 # ── 保存 ───────────────────────────────────────
 df_out = pd.concat(out_parts, ignore_index=True)[['frame', 'landmark', 'x', 'y', 'z']]
 df_out = df_out.sort_values(['frame', 'landmark']).reset_index(drop=True)
-df_out.to_csv(OUTPUT_CSV, index=False)
+df_out.to_csv(OUTPUT_CSV, index=False, encoding='utf-8')
 console.print(
     f'[bold green]✓[/bold green] Saved [cyan]{OUTPUT_CSV}[/cyan]'
     f'  ({len(df_out):,} rows, {df_out["frame"].nunique():,} frames)'

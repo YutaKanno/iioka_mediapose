@@ -2276,7 +2276,7 @@ class SyncApp:
                 'u':           ann['u'],
                 'v':           ann['v'],
             })
-        pd.DataFrame(rows).to_csv(path, index=False)
+        pd.DataFrame(rows).to_csv(path, index=False, encoding='utf-8')
         self.calib_wand_csv.set(path)   # キャリブタブに自動反映
         self._wand_save_status.set(f'保存: {Path(path).name}')
         self.root.after(3000, lambda: self._wand_save_status.set(''))
@@ -2290,7 +2290,7 @@ class SyncApp:
             return
         try:
             import pandas as pd
-            df = pd.read_csv(path)
+            df = pd.read_csv(path, encoding='utf-8')
             self.wand_annotations.clear()
             for _, row in df.iterrows():
                 key = (str(row['camera']), str(row['pose']), str(row['point_label']))

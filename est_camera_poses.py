@@ -1,8 +1,18 @@
+import sys
 import cv2
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except AttributeError:
+        import io as _io
+        sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = _io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 from scipy.optimize import least_squares
 from scipy.sparse import lil_matrix
@@ -870,7 +880,7 @@ def main():
     if len( df_3d ) == 0:
         console.print( '[yellow]Warning: 三角測量結果が空です。start_frames_per_cam または MediaPipe CSV を確認してください。[/yellow]' )
     else:
-        df_3d.to_csv( output_csv, index = False )
+        df_3d.to_csv( output_csv, index = False, encoding='utf-8' )
 
         tri_table = Table( title = 'Triangulation Result', show_header = False, border_style = 'dim' )
         tri_table.add_column( 'Key',   style = 'bold green' )

@@ -6,11 +6,21 @@ Usage:
     python make_3d_plot.py [--input FILE] [--output FILE] [--frame-step N]
 """
 
+import sys
 import argparse
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from rich.console import Console
+
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except AttributeError:
+        import io as _io
+        sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = _io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 _DEFAULT_INPUT_CSV   = 'landmarks_3d_processed.csv'
 _DEFAULT_OUTPUT_HTML = 'stick_figure_3d.html'
@@ -51,7 +61,7 @@ CONNECTIONS = [
 console = Console()
 
 # ── データ読み込み ──────────────────────────────────────
-df3d = pd.read_csv(INPUT_CSV)
+df3d = pd.read_csv(INPUT_CSV, encoding='utf-8')
 console.print(f'[cyan]Loaded {INPUT_CSV}:[/cyan] {len(df3d):,} rows')
 
 plot_frames = sorted(df3d['frame'].unique())[::PLOT_FRAME_STEP]

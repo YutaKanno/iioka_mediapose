@@ -12,6 +12,7 @@ sync_config.json に必要なキー:
     pose3d.vis_thresh    - 可視度閾値 (default: 0.5)
 """
 
+import sys
 import argparse
 import json
 from pathlib import Path
@@ -21,6 +22,15 @@ import numpy as np
 import pandas as pd
 
 from rich.console import Console
+
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except AttributeError:
+        import io as _io
+        sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = _io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -249,7 +259,7 @@ def main():
         raise SystemExit( 1 )
 
     df_out = pd.DataFrame( records )
-    df_out.to_csv( output_csv, index = False )
+    df_out.to_csv( output_csv, index = False, encoding='utf-8' )
 
     tri_table = Table( title = 'Triangulation Result', show_header = False, border_style = 'dim' )
     tri_table.add_column( 'Key',   style = 'bold green' )
