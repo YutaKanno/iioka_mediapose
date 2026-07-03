@@ -2360,11 +2360,18 @@ class SyncApp:
         else:
             txt   = 'Click Mode OFF  |  Press [Click Mode] to start'
             color = (160, 160, 160)
-        cv2.putText(img_rgb, txt, (12, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 4)
-        cv2.putText(img_rgb, txt, (12, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+        # ステータスを画像下端に小さく表示（ワンド点と被らないよう）
         info = f'{cam_name}  {pose_name}  synced:{synced_idx}'
-        cv2.putText(img_rgb, info, (12, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3)
-        cv2.putText(img_rgb, info, (12, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 0), 2)
+        fs   = 0.45   # フォントサイズ（小）
+        th   = 1      # 文字の太さ
+        pad  = 6      # 下端からの余白(px)
+        line_h = 18   # 行間(px)
+        y_status = h_img - pad
+        y_info   = h_img - pad - line_h
+        cv2.putText(img_rgb, txt,  (8, y_status), cv2.FONT_HERSHEY_SIMPLEX, fs, (0, 0, 0),   th + 1)
+        cv2.putText(img_rgb, txt,  (8, y_status), cv2.FONT_HERSHEY_SIMPLEX, fs, color,        th)
+        cv2.putText(img_rgb, info, (8, y_info),   cv2.FONT_HERSHEY_SIMPLEX, fs, (0, 0, 0),   th + 1)
+        cv2.putText(img_rgb, info, (8, y_info),   cv2.FONT_HERSHEY_SIMPLEX, fs, (200, 220, 200), th)
 
         # キャンバスにフィット
         cw = self._wand_panel_canvas.winfo_width()  or 1280
