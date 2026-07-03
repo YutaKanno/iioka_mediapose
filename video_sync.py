@@ -351,6 +351,12 @@ class SyncApp:
         self._wand_img_size     = (1920, 1080)
         self.wand_annotations   = {}   # (cam, pose, label) → {'frame', 'u', 'v'}
         self._wand_active       = False
+        # Wand UI 共有 StringVar（タブとコンパクトバー両方から参照）
+        self._wand_pose_var  = tk.StringVar(value='pose1  (1/5)')
+        self._wand_total_var = tk.StringVar(value='/ --')
+        self._wand_pts_var   = tk.StringVar(value='')
+        self._wand_prog_vars: dict = {}   # cam_name → StringVar
+        self._wand_click_btns: list = []  # 全クリックモードボタン（一括更新用）
 
         self._build_ui()
         self._bind_keys()
@@ -467,6 +473,7 @@ class SyncApp:
         self._build_stick_check_tab()   # Step 6: Stick Check（閾値確認）
         self._build_pose5_tab()         # Step 7: 3D Recon
         self.nb.bind('<<NotebookTabChanged>>', self._on_tab_change)
+        self._build_wand_compact_bar()   # Wand 専用コンパクトバー（初期非表示）
 
     def _build_sync_tab(self):
         tab = ttk.Frame(self.nb, padding=8)
@@ -1924,8 +1931,7 @@ class SyncApp:
 
         ttk.Label(top, text='Pose:').pack(side='left')
         ttk.Button(top, text='◀', width=3, command=self._wand_prev_pose).pack(side='left', padx=2)
-        self._wand_pose_label = ttk.Label(top, text='pose1  (1/5)', width=16)
-        self._wand_pose_label.pack(side='left')
+        ttk.Label(top, textvariable=self._wand_pose_var, width=16).pack(side='left')
         ttk.Button(top, text='▶ 次ポーズ', command=self._wand_next_pose).pack(side='left', padx=2)
 
         ttk.Separator(top, orient='vertical').pack(side='left', fill='y', padx=6)
@@ -1955,8 +1961,7 @@ class SyncApp:
         self._wand_frame_entry.pack(side='left', padx=2)
         self._wand_frame_entry.bind(
             '<Return>', lambda e: self._wand_show_frame(self._wand_frame_var.get()))
-        self._wand_total_label = ttk.Label(nav, text='/ --', width=8)
-        self._wand_total_label.pack(side='left')
+        ttk.Label(nav, textvariable=self._wand_total_var, width=8).pack(side='left')
         ttk.Button(nav, text='▶',  width=3,
                    command=lambda: self._wand_seek(1)).pack(side='left', padx=2)
         ttk.Button(nav, text='▶',  width=3,
@@ -1965,26 +1970,22 @@ class SyncApp:
                    command=lambda: self._wand_seek(100)).pack(side='left')
 
         ttk.Separator(nav, orient='vertical').pack(side='left', fill='y', padx=8)
-        self._wand_click_btn = ttk.Button(
-            nav, text='Click Mode: OFF', command=self._wand_toggle_click)
-        self._wand_click_btn.pack(side='left', padx=4)
+        _click_btn = ttk.Button(nav, text='Click Mode: ON', command=self._wand_toggle_click)
+        _click_btn.pack(side='left', padx=4)
+        self._wand_click_btns.append(_click_btn)
         ttk.Button(nav, text='Reset', command=self._wand_reset).pack(side='left', padx=2)
 
         ttk.Separator(nav, orient='vertical').pack(side='left', fill='y', padx=8)
-        self._wand_pts_label = ttk.Label(
-            nav, text='0.0m✗  0.5m✗  1.0m✗  1.5m✗', width=30)
-        self._wand_pts_label.pack(side='left')
+        ttk.Label(nav, textvariable=self._wand_pts_var, width=30).pack(side='left')
 
         # ── 進捗グリッド ───────────────────────────────
         prog_lf = ttk.LabelFrame(tab, text='Annotation Progress', padding=4)
         prog_lf.pack(fill='x', pady=(4, 0))
-        self._wand_prog_labels = {}
         for i in range(N_CAMS):
             cam = f'cam{i + 1}'
-            lbl = ttk.Label(prog_lf,
-                            text=f'{cam}: 0/{len(self.wand_pose_names)}', width=12)
-            lbl.grid(row=0, column=i, padx=6, pady=2)
-            self._wand_prog_labels[cam] = lbl
+            v = tk.StringVar(value=f'{cam}: 0/{len(self.wand_pose_names)}')
+            self._wand_prog_vars[cam] = v
+            ttk.Label(prog_lf, textvariable=v, width=12).grid(row=0, column=i, padx=6, pady=2)
 
         ttk.Label(
             tab,
@@ -2003,8 +2004,10 @@ class SyncApp:
     def _enter_wand_mode(self):
         self._wand_active    = True
         self.single_view_active = True
+        # nb を隠してコンパクトバーに切替（映像表示領域を最大化）
+        self.nb.pack_forget()
+        self._wand_compact_bar.pack(fill='x', side='bottom')
         self.panel_area.pack_configure(fill='both', expand=True)
-        self.nb.pack_configure(fill='x', expand=False)
 
         for p in self.panels:
             p.frame.grid_remove()
@@ -2025,6 +2028,9 @@ class SyncApp:
         self._wand_active       = False
         self.single_view_active = False
         self._wand_panel_lf.grid_remove()
+        # コンパクトバーを隠して nb を復元
+        self._wand_compact_bar.pack_forget()
+        self.nb.pack(fill='both', expand=True, padx=6, pady=(0, 6))
         if self._wand_cap is not None:
             self._wand_cap.release()
             self._wand_cap      = None
@@ -2047,7 +2053,7 @@ class SyncApp:
             self._wand_cap       = cv2.VideoCapture(path)
             self._wand_cap_path  = path
             self._wand_total_frames = int(self._wand_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            self._wand_total_label.config(text=f'/ {self._wand_total_frames - 1}')
+            self._wand_total_var.set(f'/ {self._wand_total_frames - 1}')
             # sync offset 位置からスタート
             start = max(0, min(self.sync_offsets[cam_idx], self._wand_total_frames - 1))
             self._wand_show_frame(start)
@@ -2056,7 +2062,7 @@ class SyncApp:
         # カメラロード後はクリックモードを自動ON
         self.wand_clicked_pts = []
         self.wand_click_mode  = True
-        self._wand_click_btn.config(text='Click Mode: ON')
+        self._wand_set_click_btn_text('Click Mode: ON')
 
     def _wand_show_frame(self, frame_idx: int):
         if self._wand_cap is None:
@@ -2219,12 +2225,12 @@ class SyncApp:
             self._wand_cap      = cv2.VideoCapture(path)
             self._wand_cap_path = path
             self._wand_total_frames = int(self._wand_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            self._wand_total_label.config(text=f'/ {self._wand_total_frames - 1}')
+            self._wand_total_var.set(f'/ {self._wand_total_frames - 1}')
         elif self._wand_cap is None:
             self._wand_cap      = cv2.VideoCapture(path)
             self._wand_cap_path = path
             self._wand_total_frames = int(self._wand_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            self._wand_total_label.config(text=f'/ {self._wand_total_frames - 1}')
+            self._wand_total_var.set(f'/ {self._wand_total_frames - 1}')
 
         if synced_frame is not None:
             # 同期フレームをこのカメラのローカルフレームに変換
@@ -2240,7 +2246,7 @@ class SyncApp:
         # カメラ切替後はクリックモードを自動ON
         self.wand_clicked_pts = []
         self.wand_click_mode  = True
-        self._wand_click_btn.config(text='Click Mode: ON')
+        self._wand_set_click_btn_text('Click Mode: ON')
 
     def _wand_seek(self, delta: int):
         self._wand_show_frame(self._wand_frame_idx + delta)
@@ -2249,16 +2255,16 @@ class SyncApp:
         self.wand_click_mode = not self.wand_click_mode
         if self.wand_click_mode:
             self.wand_clicked_pts = []
-            self._wand_click_btn.config(text='Click Mode: ON')
+            self._wand_set_click_btn_text('Click Mode: ON')
         else:
-            self._wand_click_btn.config(text='Click Mode: OFF')
+            self._wand_set_click_btn_text('Click Mode: OFF')
         self._wand_show_frame(self._wand_frame_idx)
 
     def _wand_reset(self):
         """現在の (cam, pose) のクリック & アノテーションをリセット。"""
         self.wand_clicked_pts = []
         self.wand_click_mode  = True
-        self._wand_click_btn.config(text='Click Mode: ON')
+        self._wand_set_click_btn_text('Click Mode: ON')
         cam  = self.wand_cam_var.get()
         pose = self.wand_pose_names[self.wand_pose_idx]
         for label in self.wand_point_labels:
@@ -2275,7 +2281,7 @@ class SyncApp:
             self.wand_pose_idx   += 1
             self.wand_clicked_pts = []
             self.wand_click_mode  = True
-            self._wand_click_btn.config(text='Click Mode: ON')
+            self._wand_set_click_btn_text('Click Mode: ON')
             self._wand_update_pose_label()
             self._wand_show_frame(self._wand_frame_idx)
 
@@ -2285,7 +2291,7 @@ class SyncApp:
             self.wand_pose_idx   -= 1
             self.wand_clicked_pts = []
             self.wand_click_mode  = True
-            self._wand_click_btn.config(text='Click Mode: ON')
+            self._wand_set_click_btn_text('Click Mode: ON')
             self._wand_update_pose_label()
             self._wand_show_frame(self._wand_frame_idx)
 
@@ -2315,13 +2321,76 @@ class SyncApp:
         if self._wand_active:
             self._wand_load_camera(self.wand_cam_var.get())
 
+    def _wand_set_click_btn_text(self, text: str):
+        """全クリックモードボタンのテキストを一括更新する。"""
+        for btn in self._wand_click_btns:
+            btn.config(text=text)
+
+    # ── Wand コンパクトバー ──────────────────────────────
+
+    def _build_wand_compact_bar(self):
+        """Wandモード時にノートブックを隠して代わりに表示するコンパクト2行バー。"""
+        bar = tk.Frame(self.root, bd=1, relief='sunken')
+        self._wand_compact_bar = bar   # pack/forget で表示切替
+
+        # ── 行1: カメラ・ポーズ・フレーム操作 ──────────
+        row1 = ttk.Frame(bar, padding=(4, 2))
+        row1.pack(fill='x')
+
+        ttk.Label(row1, text='Cam:').pack(side='left')
+        cb = ttk.Combobox(row1, textvariable=self.wand_cam_var,
+                          values=[f'cam{i+1}' for i in range(N_CAMS)],
+                          width=5, state='readonly')
+        cb.pack(side='left', padx=(2, 6))
+        cb.bind('<<ComboboxSelected>>', self._wand_on_cam_change)
+
+        ttk.Label(row1, text='Pose:').pack(side='left')
+        ttk.Button(row1, text='◀', width=2, command=self._wand_prev_pose).pack(side='left', padx=1)
+        ttk.Label(row1, textvariable=self._wand_pose_var, width=14).pack(side='left')
+        ttk.Button(row1, text='▶', width=2, command=self._wand_next_pose).pack(side='left', padx=1)
+
+        ttk.Separator(row1, orient='vertical').pack(side='left', fill='y', padx=6)
+        ttk.Button(row1, text='◀cam', width=4, command=self._wand_prev_camera).pack(side='left', padx=1)
+        ttk.Button(row1, text='cam▶', width=4, command=self._wand_next_camera).pack(side='left', padx=1)
+
+        ttk.Separator(row1, orient='vertical').pack(side='left', fill='y', padx=6)
+        ttk.Button(row1, text='◀◀', width=3, command=lambda: self._wand_seek(-100)).pack(side='left')
+        ttk.Button(row1, text='◀',  width=3, command=lambda: self._wand_seek(-10)).pack(side='left', padx=1)
+        ttk.Button(row1, text='◀',  width=3, command=lambda: self._wand_seek(-1)).pack(side='left', padx=1)
+        ttk.Entry(row1, textvariable=self._wand_frame_var, width=7, justify='center').pack(side='left', padx=2)
+        ttk.Label(row1, textvariable=self._wand_total_var, width=7).pack(side='left')
+        ttk.Button(row1, text='▶',  width=3, command=lambda: self._wand_seek(1)).pack(side='left', padx=1)
+        ttk.Button(row1, text='▶',  width=3, command=lambda: self._wand_seek(10)).pack(side='left', padx=1)
+        ttk.Button(row1, text='▶▶', width=3, command=lambda: self._wand_seek(100)).pack(side='left')
+
+        ttk.Separator(row1, orient='vertical').pack(side='left', fill='y', padx=6)
+        _cbtn = ttk.Button(row1, text='Click Mode: ON', command=self._wand_toggle_click)
+        _cbtn.pack(side='left', padx=2)
+        self._wand_click_btns.append(_cbtn)
+        ttk.Button(row1, text='Reset', command=self._wand_reset).pack(side='left', padx=2)
+
+        ttk.Separator(row1, orient='vertical').pack(side='left', fill='y', padx=6)
+        ttk.Button(row1, text='CSV保存', command=self._wand_save_csv).pack(side='left', padx=2)
+        ttk.Button(row1, text='CSV読込', command=self._wand_load_csv).pack(side='left', padx=2)
+        ttk.Label(row1, textvariable=self._wand_save_status, foreground='#0088cc').pack(side='left', padx=4)
+
+        # ── 行2: 点情報 + 進捗 ──────────────────────────
+        row2 = ttk.Frame(bar, padding=(4, 0, 4, 2))
+        row2.pack(fill='x')
+
+        ttk.Label(row2, textvariable=self._wand_pts_var).pack(side='left', padx=(0, 12))
+        ttk.Separator(row2, orient='vertical').pack(side='left', fill='y', padx=6)
+        for i in range(N_CAMS):
+            cam = f'cam{i+1}'
+            ttk.Label(row2, textvariable=self._wand_prog_vars.get(cam, tk.StringVar()),
+                      width=10).pack(side='left', padx=4)
+
     # ── ラベル更新 ─────────────────────────────────────
 
     def _wand_update_pose_label(self):
         pose  = self.wand_pose_names[self.wand_pose_idx]
         total = len(self.wand_pose_names)
-        self._wand_pose_label.config(
-            text=f'{pose}  ({self.wand_pose_idx + 1}/{total})')
+        self._wand_pose_var.set(f'{pose}  ({self.wand_pose_idx + 1}/{total})')
 
     def _wand_update_pts_label(self):
         cam  = self.wand_cam_var.get()
@@ -2334,7 +2403,7 @@ class SyncApp:
                 parts.append(f'{label}✓')
             else:
                 parts.append(f'{label}✗')
-        self._wand_pts_label.config(text='  '.join(parts))
+        self._wand_pts_var.set('  '.join(parts))
 
     def _wand_update_progress(self):
         for i in range(N_CAMS):
@@ -2345,15 +2414,8 @@ class SyncApp:
                        for lbl in self.wand_point_labels)
             )
             total = len(self.wand_pose_names)
-            lbl   = self._wand_prog_labels.get(cam)
-            if lbl:
-                lbl.config(
-                    text=f'{cam}: {done}/{total}',
-                    foreground=(
-                        '#00aa00' if done == total
-                        else 'gray' if done == 0 else 'black'
-                    ),
-                )
+            if cam in self._wand_prog_vars:
+                self._wand_prog_vars[cam].set(f'{cam}: {done}/{total}')
 
     # ── CSV 保存 / 読込 ────────────────────────────────
 
