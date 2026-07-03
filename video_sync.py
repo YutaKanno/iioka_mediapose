@@ -330,6 +330,7 @@ class SyncApp:
         self.smooth_max_gap_var = tk.IntVar(value=5)   # 補間最大連続欠損フレーム数
         self.smooth_window_var  = tk.IntVar(value=7)   # 平滑化ウィンドウ幅（奇数推奨）
         self._pose_smooth_cache: dict = {}              # (cam, gap, win) → smoothed df
+        self._resize_after_id = None                    # debounce ID for panel resize
         # 3D Recon データ選択
         self.recon_data_mode = tk.StringVar(value='raw')   # 'raw' or 'smooth'
 
@@ -1491,16 +1492,23 @@ class SyncApp:
         self._update_smooth_skel_canvas(self.sync_pos)
 
     def _on_panel_area_configure(self, event=None):
-        """panel_area リサイズ時に3つのキャンバスを等幅に調整する。"""
+        """panel_area リサイズ時に3つのキャンバスを等幅に調整する（デバウンス付き）。"""
         if not self.in_pose_preview_mode:
             return
+        # 連続発火を防ぐため50ms後に1回だけ実行
+        if hasattr(self, '_resize_after_id') and self._resize_after_id:
+            self.root.after_cancel(self._resize_after_id)
         cam_idx = self._get_cam_idx()
-        self._resize_pose_preview(cam_idx)
+        self._resize_after_id = self.root.after(
+            50, lambda: self._resize_pose_preview(cam_idx))
 
     def _exit_pose_preview_mode(self, restore_view: bool = True):
         """ポーズプレビューモードを解除する。"""
         self.in_pose_preview_mode = False
         self.panel_area.unbind('<Configure>')
+        if hasattr(self, '_resize_after_id') and self._resize_after_id:
+            self.root.after_cancel(self._resize_after_id)
+            self._resize_after_id = None
         self._skel_lf.grid_remove()
         self._skel_smooth_lf.grid_remove()
         if restore_view:
@@ -1508,11 +1516,13 @@ class SyncApp:
 
     def _resize_pose_preview(self, cam_idx: int):
         """ポーズプレビューモード時の3キャンバスを等幅に調整する。"""
+        self._resize_after_id = None
         total_w = self.panel_area.winfo_width()
         if total_w <= 1:
             return  # まだレイアウト未確定
         third_w = max(PANEL_W, (total_w - 32) // 3)
-        ah = max(PANEL_H, self.panel_area.winfo_height() - 8)
+        # -92: VideoPanel 内のラベル・ナビボタン等の高さ分を引く（_enter_single_view と同値）
+        ah = max(PANEL_H, self.panel_area.winfo_height() - 92)
         p = self.panels[cam_idx]
         p.canvas.config(width=third_w, height=ah)
         self._skel_canvas.config(width=third_w, height=ah)
