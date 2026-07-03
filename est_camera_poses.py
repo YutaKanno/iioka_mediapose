@@ -520,6 +520,7 @@ def main():
 
         for pose_i, pose in enumerate( pose_names ):
             for k, label in enumerate( point_labels ):
+                any_obs = False
                 for ci in range( n_cam ):
                     cam = camera_names[ ci ]
                     row = wand_df[
@@ -527,9 +528,13 @@ def main():
                         & ( wand_df[ 'point_label' ] == label )
                         & ( wand_df[ 'camera' ] == cam )
                     ]
+                    if len( row ) == 0:
+                        continue
                     u, v = row[ [ 'u', 'v' ] ].values[ 0 ]
                     observations.append( ( ci, point_index, u, v, 1.0 ) )
-                point_index += 1
+                    any_obs = True
+                if any_obs:
+                    point_index += 1
     else:
         console.print(
             f'[yellow]Wand CSV not found ({_wand_csv_path}) '
