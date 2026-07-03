@@ -25,4 +25,3 @@ frames/
 video_first_frames/
 
 # MediaPipe モデル（大容量）
-*.task
