@@ -351,6 +351,7 @@ class SyncApp:
         self._wand_img_size     = (1920, 1080)
         self.wand_annotations   = {}   # (cam, pose, label) → {'frame', 'u', 'v'}
         self._wand_active       = False
+        self._wand_cam_switching = False   # wand_cam_var.set() 中に <<ComboboxSelected>> を無視するガード
         # Wand UI 共有 StringVar（タブとコンパクトバー両方から参照）
         self._wand_pose_var  = tk.StringVar(value='pose1  (1/5)')
         self._wand_total_var = tk.StringVar(value='/ --')
@@ -2210,7 +2211,9 @@ class SyncApp:
 
     def _wand_switch_camera(self, cam_name: str, synced_frame=None):
         """カメラを切り替え、指定された同期フレームを表示する。"""
+        self._wand_cam_switching = True
         self.wand_cam_var.set(cam_name)
+        self._wand_cam_switching = False
         cam_idx = int(cam_name.replace('cam', '')) - 1
         self._wand_update_pose_label()
 
@@ -2317,9 +2320,20 @@ class SyncApp:
 
     def _wand_on_cam_change(self, _=None):
         """カメラドロップダウンで手動変更（ポーズはリセットしない）。"""
+        if self._wand_cam_switching:
+            return  # _wand_switch_camera 内のプログラム的変更は無視
         self._wand_update_pose_label()
-        if self._wand_active:
-            self._wand_load_camera(self.wand_cam_var.get())
+        if not self._wand_active:
+            return
+        new_cam = self.wand_cam_var.get()
+        # 現在アクティブなカメラの同期フレームを引き継ぐ
+        synced = None
+        if self._wand_cap is not None and self._wand_cap_path:
+            for i, p in enumerate(self.panels):
+                if p.paths and str(p.paths[0]) == str(self._wand_cap_path):
+                    synced = max(0, self._wand_frame_idx - self.sync_offsets[i])
+                    break
+        self._wand_switch_camera(new_cam, synced)
 
     def _wand_set_click_btn_text(self, text: str):
         """全クリックモードボタンのテキストを一括更新する。"""
