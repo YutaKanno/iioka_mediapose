@@ -324,7 +324,14 @@ class SyncApp:
         self._recon_log_queue: queue.Queue | None = None
         self._pose_csv_data: dict = {}   # {cam_name: pd.DataFrame}
         self._pose_skel_photo = None
+        self._pose_skel_smooth_photo = None
         self.in_pose_preview_mode = False
+        # 補間・平滑化パラメータ
+        self.smooth_max_gap_var = tk.IntVar(value=5)   # 補間最大連続欠損フレーム数
+        self.smooth_window_var  = tk.IntVar(value=7)   # 平滑化ウィンドウ幅（奇数推奨）
+        self._pose_smooth_cache: dict = {}              # (cam, gap, win) → smoothed df
+        # 3D Recon データ選択
+        self.recon_data_mode = tk.StringVar(value='raw')   # 'raw' or 'smooth'
 
         # ── Wand Annotation 関連変数 ──────────────
         self.wand_pose_names    = ['pose1', 'pose2', 'pose3', 'pose4', 'pose5']
@@ -363,12 +370,21 @@ class SyncApp:
             self.panel_area.columnconfigure(c, weight=1)
 
         # Step 4 用スティックフィギュアキャンバス（panel_area 右半分に配置、初期は非表示）
-        self._skel_lf = ttk.LabelFrame(self.panel_area, text='Stick Figure', padding=2)
+        self._skel_lf = ttk.LabelFrame(self.panel_area, text='Stick Figure (Raw)', padding=2)
         self._skel_canvas = tk.Canvas(
             self._skel_lf, width=PANEL_W, height=PANEL_H,
             bg='white', highlightthickness=0,
         )
         self._skel_canvas.pack(fill='both', expand=True)
+
+        # 補間・平滑化後スティックフィギュアキャンバス（Stick Check 時のみ表示）
+        self._skel_smooth_lf = ttk.LabelFrame(
+            self.panel_area, text='Stick Figure (Interp + Smooth)', padding=2)
+        self._skel_smooth_canvas = tk.Canvas(
+            self._skel_smooth_lf, width=PANEL_W, height=PANEL_H,
+            bg='#f0f8ff', highlightthickness=0,
+        )
+        self._skel_smooth_canvas.pack(fill='both', expand=True)
 
         # Wand Annotation 用キャンバス（panel_area 全面に配置、初期は非表示）
         self._wand_panel_lf = ttk.LabelFrame(self.panel_area, text='Wand Annotation', padding=2)
@@ -607,6 +623,7 @@ class SyncApp:
         # Step 4 ポーズプレビューモード時はスティックフィギュアも更新
         if self.in_pose_preview_mode:
             self._update_skel_canvas(pos)
+            self._update_smooth_skel_canvas(pos)
 
     def _update_slider_range(self):
         """動画がロードされているカメラから最大同期ポジションを算出してスライダー範囲を設定"""
@@ -1453,35 +1470,53 @@ class SyncApp:
         for p in self.panels:
             p.frame.grid_remove()
         self._skel_lf.grid_remove()
+        self._skel_smooth_lf.grid_remove()
 
         self.panels[cam_idx].frame.grid(
             row=0, column=0, padx=(4, 2), pady=4, sticky='nsew')
         self._skel_lf.grid(
-            row=0, column=1, columnspan=2, padx=(2, 4), pady=4, sticky='nsew')
+            row=0, column=1, padx=2, pady=4, sticky='nsew')
+        self._skel_smooth_lf.grid(
+            row=0, column=2, padx=(2, 4), pady=4, sticky='nsew')
 
         self.panel_area.grid_rowconfigure(0, weight=1)
-        self.panel_area.grid_columnconfigure(0, weight=1)
-        self.panel_area.grid_columnconfigure(1, weight=1)
-        self.panel_area.grid_columnconfigure(2, weight=0)
+        for c in range(3):
+            self.panel_area.grid_columnconfigure(c, weight=1, minsize=PANEL_W)
 
+        # Configure バインドで動的リサイズ（遅延してレイアウト確定後に実行）
+        self.panel_area.bind('<Configure>', self._on_panel_area_configure)
         self.root.update_idletasks()
-        self._resize_pose_preview(cam_idx)
+        self.root.after(30, lambda: self._resize_pose_preview(cam_idx))
         self._update_skel_canvas(self.sync_pos)
+        self._update_smooth_skel_canvas(self.sync_pos)
+
+    def _on_panel_area_configure(self, event=None):
+        """panel_area リサイズ時に3つのキャンバスを等幅に調整する。"""
+        if not self.in_pose_preview_mode:
+            return
+        cam_idx = self._get_cam_idx()
+        self._resize_pose_preview(cam_idx)
 
     def _exit_pose_preview_mode(self, restore_view: bool = True):
         """ポーズプレビューモードを解除する。"""
         self.in_pose_preview_mode = False
+        self.panel_area.unbind('<Configure>')
         self._skel_lf.grid_remove()
+        self._skel_smooth_lf.grid_remove()
         if restore_view:
             self._enter_single_view(self._get_cam_idx())
 
     def _resize_pose_preview(self, cam_idx: int):
-        """ポーズプレビューモード時のキャンバスサイズを調整する。"""
-        half_w = max(PANEL_W, (self.panel_area.winfo_width() - 22) // 2)
-        ah = max(PANEL_H, self.panel_area.winfo_height() - 92)
+        """ポーズプレビューモード時の3キャンバスを等幅に調整する。"""
+        total_w = self.panel_area.winfo_width()
+        if total_w <= 1:
+            return  # まだレイアウト未確定
+        third_w = max(PANEL_W, (total_w - 32) // 3)
+        ah = max(PANEL_H, self.panel_area.winfo_height() - 8)
         p = self.panels[cam_idx]
-        p.canvas.config(width=half_w, height=ah)
-        self._skel_canvas.config(width=half_w, height=ah)
+        p.canvas.config(width=third_w, height=ah)
+        self._skel_canvas.config(width=third_w, height=ah)
+        self._skel_smooth_canvas.config(width=third_w, height=ah)
         if p.caps:
             p.show_frame(p.current_frame)
         else:
@@ -1532,6 +1567,140 @@ class SyncApp:
         self._skel_canvas.delete('all')
         self._skel_canvas.create_image(
             cw // 2, ch // 2, anchor='center', image=self._pose_skel_photo)
+
+    # ── 補間・平滑化スティックフィギュア ──────────────────────────────
+
+    def _on_smooth_param_change(self, _=None):
+        """平滑化パラメータ変更時: キャッシュ無効化 + 表示値更新 + 再描画。"""
+        self._smooth_gap_disp.set(str(int(self.smooth_max_gap_var.get())))
+        self._smooth_win_disp.set(str(int(self.smooth_window_var.get())))
+        self._pose_smooth_cache.clear()
+        if self.in_pose_preview_mode:
+            self._update_smooth_skel_canvas(self.sync_pos)
+
+    def _get_smoothed_df(self, cam_name: str):
+        """指定カメラの補間・平滑化済み DataFrame を返す（キャッシュあり）。"""
+        import pandas as pd
+        max_gap = int(self.smooth_max_gap_var.get())
+        window  = max(1, int(self.smooth_window_var.get()))
+        key = (cam_name, max_gap, window)
+        if key in self._pose_smooth_cache:
+            return self._pose_smooth_cache[key]
+
+        # 生データを取得（未ロードなら読み込む）
+        if cam_name not in self._pose_csv_data:
+            try:
+                cfg = json.loads(Path(self._json_path).read_text(encoding='utf-8'))
+                lm_entry = cfg.get('pose3d', {}).get('landmarks', {}).get(cam_name)
+                if not lm_entry:
+                    return None
+                df_raw = pd.DataFrame(lm_entry['data'], columns=lm_entry['columns'])
+                self._pose_csv_data[cam_name] = df_raw
+            except Exception:
+                return None
+
+        df = self._pose_csv_data[cam_name].copy()
+        coord_cols = [c for c in df.columns
+                      if c.endswith('_x') or c.endswith('_y') or c.endswith('_z')]
+
+        # 線形補間（最大 max_gap フレームの連続欠損のみ）
+        if max_gap > 0:
+            df[coord_cols] = df[coord_cols].interpolate(
+                method='linear', limit=max_gap, limit_direction='both')
+
+        # 移動平均平滑化
+        if window > 1:
+            df[coord_cols] = (
+                df[coord_cols]
+                .rolling(window=window, center=True, min_periods=1)
+                .mean()
+            )
+
+        self._pose_smooth_cache[key] = df
+        return df
+
+    def _update_smooth_skel_canvas(self, sync_pos: int):
+        """平滑化スティックフィギュアキャンバスを更新する。"""
+        cam_name = self.pose_preview_cam_var.get()
+        try:
+            cam_i = int(cam_name.replace('cam', '')) - 1
+        except ValueError:
+            return
+        panel = self.panels[cam_i]
+        if not panel.caps:
+            return
+
+        def _load():
+            with panel._cap_lock:
+                if not panel.caps:
+                    return
+                vid_w = int(panel.caps[0].get(cv2.CAP_PROP_FRAME_WIDTH)) or 1920
+                vid_h = int(panel.caps[0].get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1080
+
+            cw = int(self._skel_smooth_canvas.cget('width'))
+            ch = int(self._skel_smooth_canvas.cget('height'))
+            scale = min(cw / vid_w, ch / vid_h)
+            nw = max(1, int(vid_w * scale))
+            nh = max(1, int(vid_h * scale))
+
+            vis_thresh = self.stick_thresh_vars.get(cam_name, tk.DoubleVar(value=0.0)).get()
+            df_smooth = self._get_smoothed_df(cam_name)
+            sub = np.full((nh, nw, 3), 240, dtype=np.uint8)  # 淡い背景
+            if df_smooth is not None:
+                sub = self._draw_skeleton_from_df(
+                    sub, df_smooth, sync_pos, nw, nh, vis_thresh, color_joints=(0, 130, 0))
+            canvas_img = np.full((ch, cw, 3), 240, dtype=np.uint8)
+            ox, oy = (cw - nw) // 2, (ch - nh) // 2
+            canvas_img[oy:oy + nh, ox:ox + nw] = sub
+
+            pil_img = Image.fromarray(canvas_img)
+            self.root.after(0, lambda: self._display_smooth_canvas(pil_img, cw, ch))
+
+        threading.Thread(target=_load, daemon=True).start()
+
+    def _display_smooth_canvas(self, pil_img: Image.Image, cw: int, ch: int):
+        self._pose_skel_smooth_photo = ImageTk.PhotoImage(pil_img)
+        self._skel_smooth_canvas.delete('all')
+        self._skel_smooth_canvas.create_image(
+            cw // 2, ch // 2, anchor='center', image=self._pose_skel_smooth_photo)
+
+    def _draw_skeleton_from_df(self, img_rgb: np.ndarray, df, synced_frame: int,
+                               img_w: int, img_h: int, vis_thresh: float = 0.0,
+                               color_joints=(0, 0, 200)) -> np.ndarray:
+        """DataFrame の特定フレーム行からスケルトンを描画して返す。"""
+        import math
+        rows = df[df['frame'] == synced_frame]
+        if len(rows) == 0:
+            return img_rgb
+        row = rows.iloc[0]
+        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+
+        def get_pt(lm_name):
+            x_col, y_col, v_col = f'{lm_name}_x', f'{lm_name}_y', f'{lm_name}_v'
+            if x_col not in row or y_col not in row:
+                return None
+            x, y = row[x_col], row[y_col]
+            if math.isnan(x) or math.isnan(y):
+                return None
+            if v_col in row:
+                v = row[v_col]
+                if not math.isnan(v) and v < vis_thresh:
+                    return None
+            return (int(x * img_w), int(y * img_h))
+
+        bone_color = tuple(int(c * 0.6) for c in color_joints[::-1])
+        for a, b in self.POSE_2D_CONNECTIONS:
+            pa, pb = get_pt(a), get_pt(b)
+            if pa is not None and pb is not None:
+                cv2.line(img_bgr, pa, pb, bone_color, 3)
+
+        for col in df.columns:
+            if col.endswith('_x'):
+                pt = get_pt(col[:-2])
+                if pt is not None:
+                    cv2.circle(img_bgr, pt, 5, color_joints[::-1], -1)
+
+        return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
     POSE_2D_CONNECTIONS = [
         ('NOSE',           'LEFT_EAR'),
@@ -1680,6 +1849,34 @@ class SyncApp:
             ttk.Label(thresh_lf, textvariable=self._thresh_disp_vars[cam],
                       width=4, anchor='w').grid(
                 row=row_idx, column=col + 2, padx=(2, 12), pady=3, sticky='w')
+
+        # 補間・平滑化パラメータスライダー
+        smooth_lf = ttk.LabelFrame(tab, text='補間・平滑化パラメータ（右パネル）', padding=6)
+        smooth_lf.pack(fill='x', pady=(6, 0))
+        smooth_lf.columnconfigure(1, weight=1)
+
+        self._smooth_gap_disp = tk.StringVar(value=str(self.smooth_max_gap_var.get()))
+        self._smooth_win_disp = tk.StringVar(value=str(self.smooth_window_var.get()))
+
+        ttk.Label(smooth_lf, text='補間 最大欠損フレーム数:', anchor='e').grid(
+            row=0, column=0, sticky='e', padx=(4, 4), pady=3)
+        ttk.Scale(
+            smooth_lf, from_=0, to=30, orient='horizontal',
+            variable=self.smooth_max_gap_var,
+            command=self._on_smooth_param_change,
+        ).grid(row=0, column=1, sticky='ew', padx=4, pady=3)
+        ttk.Label(smooth_lf, textvariable=self._smooth_gap_disp,
+                  width=4, anchor='w').grid(row=0, column=2, padx=(2, 8), pady=3)
+
+        ttk.Label(smooth_lf, text='平滑化 ウィンドウ幅 (フレーム):', anchor='e').grid(
+            row=1, column=0, sticky='e', padx=(4, 4), pady=3)
+        ttk.Scale(
+            smooth_lf, from_=1, to=31, orient='horizontal',
+            variable=self.smooth_window_var,
+            command=self._on_smooth_param_change,
+        ).grid(row=1, column=1, sticky='ew', padx=4, pady=3)
+        ttk.Label(smooth_lf, textvariable=self._smooth_win_disp,
+                  width=4, anchor='w').grid(row=1, column=2, padx=(2, 8), pady=3)
 
     # ── Wand Annotation タブ ─────────────────────────
 
@@ -2103,6 +2300,7 @@ class SyncApp:
         """スライダーで閾値が変わったときにスティックを再描画する。"""
         if self.in_pose_preview_mode and self.pose_preview_cam_var.get() == cam_name:
             self._update_skel_canvas(self.sync_pos)
+            self._update_smooth_skel_canvas(self.sync_pos)
 
     def _save_stick_thresholds(self):
         """カメラ別閾値を sync_config.json に保存する。"""
@@ -2129,6 +2327,18 @@ class SyncApp:
         ttk.Label(desc_lf, text=(
             'triangulate_only.py  →  process_landmarks_3d.py  →  make_3d_plot.py  →  ブラウザ表示'
         )).pack(anchor='w')
+
+        # 入力データ選択（生データ or 補間+平滑化）
+        data_lf = ttk.LabelFrame(tab, text='入力データ選択', padding=6)
+        data_lf.pack(fill='x', pady=(0, 6))
+        ttk.Radiobutton(
+            data_lf, text='生データ（Raw）をそのまま三角測量',
+            variable=self.recon_data_mode, value='raw',
+        ).pack(side='left', padx=(0, 16))
+        ttk.Radiobutton(
+            data_lf, text='補間 + 平滑化後のデータで三角測量  （Stick Check のパラメータを使用）',
+            variable=self.recon_data_mode, value='smooth',
+        ).pack(side='left')
 
         run_row = ttk.Frame(tab)
         run_row.pack(fill='x', pady=(0, 6))
@@ -2216,13 +2426,64 @@ class SyncApp:
                 return -1
 
         def _worker():
+            import json as _json
+            import pandas as _pd
+
             sf = self.pose_start_frame.get()
             ef = self.pose_end_frame.get()
-            tri_csv = f'3d_{sf}_{ef}.csv'
+            tri_csv  = f'3d_{sf}_{ef}.csv'
             proc_csv = f'3d_{sf}_{ef}_processed.csv'
             html_out = f'3d_{sf}_{ef}.html'
 
-            rc = _run_step([sys.executable, 'triangulate_only.py'], 'triangulate_only')
+            use_smooth  = (self.recon_data_mode.get() == 'smooth')
+            tmp_cfg_path = Path('_recon_smooth_config.json')
+
+            if use_smooth:
+                # 平滑化済み landmarks を一時 sync_config に書き出す
+                max_gap = int(self.smooth_max_gap_var.get())
+                window  = max(1, int(self.smooth_window_var.get()))
+                self._recon_log_queue.put(
+                    f'補間 (最大欠損={max_gap}) + 平滑化 (window={window}) を適用中…\n')
+                try:
+                    base_cfg = _json.loads(
+                        Path(self._json_path).read_text(encoding='utf-8'))
+                    lm_store = base_cfg.get('pose3d', {}).get('landmarks', {})
+                    smooth_lm = {}
+                    for cam_name, lm_entry in lm_store.items():
+                        df = _pd.DataFrame(lm_entry['data'], columns=lm_entry['columns'])
+                        coord_cols = [c for c in df.columns
+                                      if c.endswith('_x') or c.endswith('_y')
+                                      or c.endswith('_z')]
+                        if max_gap > 0:
+                            df[coord_cols] = df[coord_cols].interpolate(
+                                method='linear', limit=max_gap, limit_direction='both')
+                        if window > 1:
+                            df[coord_cols] = (
+                                df[coord_cols]
+                                .rolling(window=window, center=True, min_periods=1)
+                                .mean()
+                            )
+                        smooth_lm[cam_name] = {
+                            'columns': df.columns.tolist(),
+                            'data':    df.values.tolist(),
+                        }
+                        self._recon_log_queue.put(f'  {cam_name}: {len(df)} フレーム 平滑化済み\n')
+                    tmp_cfg = dict(base_cfg)
+                    tmp_cfg['pose3d'] = dict(base_cfg.get('pose3d', {}))
+                    tmp_cfg['pose3d']['landmarks'] = smooth_lm
+                    tmp_cfg_path.write_text(
+                        _json.dumps(tmp_cfg, indent=2, ensure_ascii=False), encoding='utf-8')
+                    tri_cmd = [sys.executable, 'triangulate_only.py',
+                               '--config', str(tmp_cfg_path)]
+                except Exception as ex:
+                    self._recon_log_queue.put(f'ERROR (平滑化): {ex}\n')
+                    self._recon_log_queue.put(('__done__', '3D reconstruction', -1))
+                    return
+            else:
+                tri_cmd = [sys.executable, 'triangulate_only.py']
+
+            rc = _run_step(tri_cmd, 'triangulate_only')
+            tmp_cfg_path.unlink(missing_ok=True)
             if rc != 0:
                 self._recon_log_queue.put(('__done__', '3D reconstruction', rc))
                 return
