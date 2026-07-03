@@ -637,6 +637,9 @@ class SyncApp:
         self.sync_pos_label.config(text=f'/ {max(1, max_pos)}')
 
     def sync_seek(self, delta: int):
+        if self._wand_active:
+            self._wand_seek(delta)
+            return
         if self.synced:
             self._sync_all_to(self.sync_pos + delta)
 
@@ -1545,23 +1548,22 @@ class SyncApp:
         if not panel.caps:
             return
 
-        abs_frame = self.sync_offsets[cam_i] + sync_pos
+        # メインスレッドで tk 値を取得（Windows スレッド安全対策）
+        cw = int(self._skel_canvas.cget('width'))
+        ch = int(self._skel_canvas.cget('height'))
+        vis_thresh = self.stick_thresh_vars.get(cam_name, tk.DoubleVar(value=0.0)).get()
 
         def _load():
-            # 動画アスペクト比のみ取得（フレーム読み込み不要）
             with panel._cap_lock:
                 if not panel.caps:
                     return
                 vid_w = int(panel.caps[0].get(cv2.CAP_PROP_FRAME_WIDTH)) or 1920
                 vid_h = int(panel.caps[0].get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1080
 
-            cw = int(self._skel_canvas.cget('width'))
-            ch = int(self._skel_canvas.cget('height'))
             scale = min(cw / vid_w, ch / vid_h)
             nw = max(1, int(vid_w * scale))
             nh = max(1, int(vid_h * scale))
 
-            vis_thresh = self.stick_thresh_vars.get(cam_name, tk.DoubleVar(value=0.0)).get()
             sub = np.full((nh, nw, 3), 255, dtype=np.uint8)
             sub = self._draw_skeleton(sub, cam_name, sync_pos, nw, nh, vis_thresh)
             canvas_img = np.full((ch, cw, 3), 255, dtype=np.uint8)
@@ -1642,6 +1644,12 @@ class SyncApp:
         if not panel.caps:
             return
 
+        # メインスレッドで tk 値・DataFrame を取得（Windows スレッド安全対策）
+        cw = int(self._skel_smooth_canvas.cget('width'))
+        ch = int(self._skel_smooth_canvas.cget('height'))
+        vis_thresh = self.stick_thresh_vars.get(cam_name, tk.DoubleVar(value=0.0)).get()
+        df_smooth = self._get_smoothed_df(cam_name)
+
         def _load():
             with panel._cap_lock:
                 if not panel.caps:
@@ -1649,14 +1657,10 @@ class SyncApp:
                 vid_w = int(panel.caps[0].get(cv2.CAP_PROP_FRAME_WIDTH)) or 1920
                 vid_h = int(panel.caps[0].get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1080
 
-            cw = int(self._skel_smooth_canvas.cget('width'))
-            ch = int(self._skel_smooth_canvas.cget('height'))
             scale = min(cw / vid_w, ch / vid_h)
             nw = max(1, int(vid_w * scale))
             nh = max(1, int(vid_h * scale))
 
-            vis_thresh = self.stick_thresh_vars.get(cam_name, tk.DoubleVar(value=0.0)).get()
-            df_smooth = self._get_smoothed_df(cam_name)
             sub = np.full((nh, nw, 3), 240, dtype=np.uint8)  # 淡い背景
             if df_smooth is not None:
                 sub = self._draw_skeleton_from_df(
@@ -2028,18 +2032,22 @@ class SyncApp:
         path = panel.paths[0]
         if self._wand_cap is not None and self._wand_cap_path == path:
             self._wand_show_frame(self._wand_frame_idx)
-            return
-        if self._wand_cap is not None:
-            self._wand_cap.release()
-        self._wand_cap       = cv2.VideoCapture(path)
-        self._wand_cap_path  = path
-        self._wand_total_frames = int(self._wand_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self._wand_total_label.config(text=f'/ {self._wand_total_frames - 1}')
-        # sync offset 位置からスタート
-        start = max(0, min(self.sync_offsets[cam_idx], self._wand_total_frames - 1))
-        self._wand_show_frame(start)
+        else:
+            if self._wand_cap is not None:
+                self._wand_cap.release()
+            self._wand_cap       = cv2.VideoCapture(path)
+            self._wand_cap_path  = path
+            self._wand_total_frames = int(self._wand_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self._wand_total_label.config(text=f'/ {self._wand_total_frames - 1}')
+            # sync offset 位置からスタート
+            start = max(0, min(self.sync_offsets[cam_idx], self._wand_total_frames - 1))
+            self._wand_show_frame(start)
         self._wand_update_pose_label()
         self._wand_update_progress()
+        # カメラロード後はクリックモードを自動ON
+        self.wand_clicked_pts = []
+        self.wand_click_mode  = True
+        self._wand_click_btn.config(text='Click Mode: ON')
 
     def _wand_show_frame(self, frame_idx: int):
         if self._wand_cap is None:
@@ -2152,8 +2160,6 @@ class SyncApp:
                 'u': u,
                 'v': v,
             }
-        self.wand_click_mode = False
-        self._wand_click_btn.config(text='Click Mode: OFF')
         self.wand_clicked_pts = []
         self._wand_update_progress()
 
@@ -2216,6 +2222,10 @@ class SyncApp:
 
         self._wand_show_frame(target)
         self._wand_update_progress()
+        # カメラ切替後はクリックモードを自動ON
+        self.wand_clicked_pts = []
+        self.wand_click_mode  = True
+        self._wand_click_btn.config(text='Click Mode: ON')
 
     def _wand_seek(self, delta: int):
         self._wand_show_frame(self._wand_frame_idx + delta)
@@ -2232,8 +2242,8 @@ class SyncApp:
     def _wand_reset(self):
         """現在の (cam, pose) のクリック & アノテーションをリセット。"""
         self.wand_clicked_pts = []
-        self.wand_click_mode  = False
-        self._wand_click_btn.config(text='Click Mode: OFF')
+        self.wand_click_mode  = True
+        self._wand_click_btn.config(text='Click Mode: ON')
         cam  = self.wand_cam_var.get()
         pose = self.wand_pose_names[self.wand_pose_idx]
         for label in self.wand_point_labels:
@@ -2249,8 +2259,8 @@ class SyncApp:
         if self.wand_pose_idx < len(self.wand_pose_names) - 1:
             self.wand_pose_idx   += 1
             self.wand_clicked_pts = []
-            self.wand_click_mode  = False
-            self._wand_click_btn.config(text='Click Mode: OFF')
+            self.wand_click_mode  = True
+            self._wand_click_btn.config(text='Click Mode: ON')
             self._wand_update_pose_label()
             self._wand_show_frame(self._wand_frame_idx)
 
@@ -2259,8 +2269,8 @@ class SyncApp:
         if self.wand_pose_idx > 0:
             self.wand_pose_idx   -= 1
             self.wand_clicked_pts = []
-            self.wand_click_mode  = False
-            self._wand_click_btn.config(text='Click Mode: OFF')
+            self.wand_click_mode  = True
+            self._wand_click_btn.config(text='Click Mode: ON')
             self._wand_update_pose_label()
             self._wand_show_frame(self._wand_frame_idx)
 
@@ -2272,9 +2282,6 @@ class SyncApp:
         cam_order = [f'cam{i + 1}' for i in range(N_CAMS) if self.panels[i].caps]
         cur_pos   = cam_order.index(cam_name) if cam_name in cam_order else 0
         if cur_pos + 1 < len(cam_order):
-            self.wand_clicked_pts = []
-            self.wand_click_mode  = False
-            self._wand_click_btn.config(text='Click Mode: OFF')
             self._wand_switch_camera(cam_order[cur_pos + 1], synced)
 
     def _wand_prev_camera(self):
@@ -2285,16 +2292,10 @@ class SyncApp:
         cam_order = [f'cam{i + 1}' for i in range(N_CAMS) if self.panels[i].caps]
         cur_pos   = cam_order.index(cam_name) if cam_name in cam_order else 0
         if cur_pos > 0:
-            self.wand_clicked_pts = []
-            self.wand_click_mode  = False
-            self._wand_click_btn.config(text='Click Mode: OFF')
             self._wand_switch_camera(cam_order[cur_pos - 1], synced)
 
     def _wand_on_cam_change(self, _=None):
         """カメラドロップダウンで手動変更（ポーズはリセットしない）。"""
-        self.wand_clicked_pts = []
-        self.wand_click_mode  = False
-        self._wand_click_btn.config(text='Click Mode: OFF')
         self._wand_update_pose_label()
         if self._wand_active:
             self._wand_load_camera(self.wand_cam_var.get())
